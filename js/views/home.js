@@ -1,17 +1,20 @@
 // الرئيسية: مصروف اليوم، الإدخال السريع، المستحقات، الاختصارات، ملخص الشهر
-import { h, icon, toast, haptic } from '../ui.js';
+import { h, icon, toast, haptic, swipeable } from '../ui.js';
+import { incomeStatus, recurringStatus, SOURCE_CATEGORY } from '../income.js';
 import { badge } from '../icons.js';
 import { store, uid, catLabel, catIcon, catTint } from '../store.js';
 import { CURRENCIES, fmt, rateOf, toUSD } from '../money.js';
 import { todayISO, monthLabel, daysText, daysUntil, longDate } from '../dates.js';
 import { dailyAllowance, plan, monthStats, netWorth, sortTx, debtRemaining } from '../calc.js';
-import { parseQuick } from '../parse.js';
+import { parseQuick, parseMulti } from '../parse.js';
+import { openVoice, reviewText } from '../voice.js';
 import { openRateForm, INCOME_KINDS } from '../forms.js';
 import { openAddSheet } from '../keypad.js';
-import { group, txRow, bar } from '../components.js';
+import { group, txRow, bar, cashCard } from '../components.js';
 import { buildPlan } from '../planner.js';
 import { computeZakat, zakatDueDate } from '../zakat.js';
 import { openOnboarding } from '../onboarding.js';
+import { toggleHideAmounts } from '../pin.js';
 
 let introPlayed = false;
 
@@ -30,6 +33,7 @@ export function renderHome({ open }) {
     quickAdd(),
     frequentChips(st),
     dueCard(st, key),
+    cashCard(st, key, { compact: true }),
     rateBanners(st),
     zakatBanner(st, open),
     backupBanner(st, open),
@@ -54,7 +58,7 @@ function greeting(st, open) {
     h('div', { class: 'head-actions' },
       h('button', {
         class: 'icon-btn', type: 'button', 'aria-label': hidden ? 'أظهر المبالغ' : 'خبّي المبالغ', 'aria-pressed': String(hidden),
-        onclick: () => { haptic('select'); store.update((s) => { s.settings.hideAmounts = !s.settings.hideAmounts; }); },
+        onclick: () => toggleHideAmounts(),
       }, icon(hidden ? 'eyeOff' : 'eye', 20)),
       h('button', { class: 'icon-btn', type: 'button', 'aria-label': 'الإعدادات', onclick: () => open('settings') }, icon('sliders', 20))));
 }
@@ -112,15 +116,18 @@ function hero(a) {
 
 /* ---------- الإدخال السريع ---------- */
 function quickAdd() {
+  const addBtn = h('button', { class: 'quick-add', type: 'submit', 'aria-label': 'أضف', hidden: true }, icon('check', 20, { stroke: 2.4 }));
   const input = h('input', {
-    type: 'text', class: 'quick-input', placeholder: 'اكتب أو احكي: 50 أكل',
-    enterkeyhint: 'send', autocomplete: 'off', 'aria-label': 'إدخال سريع للمصروف',
+    type: 'text', class: 'quick-input', placeholder: 'احكي أو اكتب: 50 أكل و20 قهوة',
+    enterkeyhint: 'done', autocomplete: 'off', 'aria-label': 'إدخال سريع: اكتب مصروفك',
+    oninput: (e) => { addBtn.hidden = !e.target.value.trim(); },
   });
   return h('section', { class: 'quick-wrap' },
     h('form', { class: 'quick', onsubmit: (e) => { e.preventDefault(); submitQuick(input); } },
-      h('span', { class: 'mic' }, icon('mic', 20)),
+      h('button', { class: 'quick-mic', type: 'button', 'aria-label': 'سجّل بالصوت', onclick: () => { haptic('select'); openVoice(); } }, icon('mic', 22, { stroke: 2 })),
       input,
-      h('button', { class: 'send', type: 'submit', 'aria-label': 'أضف' }, icon('send', 20))));
+      addBtn),
+    h('p', { class: 'quick-hint' }, 'اضغط المايك واحكي متل ما بتحكي: «صرفت 50 تركي مواصلات و30 قهوة».'));
 }
 
 function addTx(tx, label) {
@@ -131,6 +138,9 @@ function addTx(tx, label) {
 
 function submitQuick(input) {
   const st = store.state;
+  // جملة فيها كذا مبلغ أو سياق: منعرضها للمراجعة. مبلغ واحد واضح: بينضاف فوراً
+  const multi = parseMulti(input.value, st);
+  if (multi.length > 1 || (multi.length === 1 && !multi[0].matched)) { reviewText(input.value); return; }
   const r = parseQuick(input.value, st);
   if (!r.ok) {
     if (r.reason === 'empty') { input.focus(); return; }
@@ -178,42 +188,64 @@ function frequentChips(st) {
   }));
 }
 
-/* ---------- مستحقات الشهر: دخل متوقع ما انسجل، وفواتير ثابتة ما اندفعت ---------- */
-const SOURCE_CATEGORY = { salary: 'inc_salary', stocks: 'inc_stocks', extra: 'inc_extra', other: 'inc_other' };
+/* ---------- مستحقات الشهر: دفعات دخل وصل وقتها، واشتراكات قرّب تجديدها ---------- */
+function dismiss(id, label) {
+  store.update((s) => { s.settings.dismissed = { ...(s.settings.dismissed || {}), [id]: true }; });
+  toast(`انشال تذكير ${label}`, {
+    action: 'تراجع',
+    onAction: () => store.update((s) => { const x = { ...(s.settings.dismissed || {}) }; delete x[id]; s.settings.dismissed = x; }),
+  });
+}
 
 function dueCard(st, key) {
-  const monthTxs = st.transactions.filter((t) => t.date.startsWith(key));
+  const today = todayISO();
+  const day = Number(today.slice(8, 10));
   const rows = [];
-  for (const s of st.incomeSources) {
-    if (s.kind === 'debt' || (s.schedule === 'once' && s.month !== key)) continue;
-    if (monthTxs.some((t) => t.sourceId === s.id)) continue;
+  const accFor = (cur) => st.accounts.find((x) => x.id === st.settings.defaultAccountId && x.currency === cur) || st.accounts.find((x) => x.currency === cur && !x.savings);
+
+  // دفعات الدخل: بتطلع من يوم قبل موعدها، وبتختفي لما تسجّلها (أو تسحبها)
+  for (const { source: s, parts } of incomeStatus(st, key).list) {
     const k = INCOME_KINDS[s.kind] || INCOME_KINDS.other;
-    const acc = st.accounts.find((x) => x.id === st.settings.defaultAccountId && x.currency === s.currency) || st.accounts.find((x) => x.currency === s.currency);
-    rows.push(h('div', { class: 'row' },
-      badge(k.icon, 'mint', 40),
-      h('span', { class: 'row-main' },
-        h('span', { class: 'row-title' }, `وصل «${s.name}»؟`),
-        h('span', { class: 'row-sub' }, `متوقع ${fmt(s.amount, s.currency)}`)),
-      h('button', {
-        class: 'btn small', type: 'button',
-        onclick: () => openAddSheet({ type: 'income', amount: s.amount, accountId: acc?.id, categoryId: SOURCE_CATEGORY[s.kind] || 'inc_other', note: s.name, sourceId: s.id }),
-      }, 'سجّله')));
+    for (const p of parts) {
+      if (p.done || p.day > day + 1) continue;
+      const multi = parts.length > 1;
+      const partial = p.gotUSD > 0.5;
+      const title = multi ? `وصلت الدفعة ${p.index + 1} من «${s.name}»؟` : `وصل «${s.name}»؟`;
+      let when;
+      if (p.day === day) when = 'متوقعة اليوم';
+      else if (p.day === day + 1) when = 'متوقعة بكرة';
+      else when = `كانت متوقعة ${p.day} بالشهر`;
+      const sub = partial ? `وصل جزء، باقي ${fmt(p.remaining, s.currency)}` : `${when}، ${fmt(p.remaining, s.currency)}`;
+      const id = `src:${s.id}:${key}:${p.index}`;
+      rows.push(swipeable(h('div', { class: 'row' },
+        badge(k.icon, 'mint', 40),
+        h('span', { class: 'row-main' }, h('span', { class: 'row-title' }, title), h('span', { class: 'row-sub wrap' }, sub)),
+        h('button', {
+          class: 'btn small', type: 'button',
+          onclick: () => openAddSheet({ type: 'income', amount: Math.round(p.remaining * 100) / 100, accountId: accFor(s.currency)?.id, categoryId: SOURCE_CATEGORY[s.kind] || 'inc_other', note: s.name, sourceId: s.id }),
+        }, 'سجّل')), () => dismiss(id, s.name)));
+    }
   }
-  for (const c of st.categories) {
-    if (c.type !== 'expense' || !c.fixed || !(c.budget > 0)) continue;
-    if (monthTxs.some((t) => t.type === 'expense' && t.categoryId === c.id)) continue;
-    rows.push(h('div', { class: 'row' },
-      badge(catIcon(c), catTint(c), 40),
-      h('span', { class: 'row-main' },
-        h('span', { class: 'row-title' }, `دفعت ${catLabel(c)}؟`),
-        h('span', { class: 'row-sub' }, `بالميزانية ${fmt(c.budget)}`)),
+
+  // الاشتراكات والفواتير الدورية: قبل الموعد بيوم
+  for (const { r, dueDay, diff, show } of recurringStatus(st, today)) {
+    if (!show) continue;
+    let sub;
+    if (diff === 1) sub = `بيتجدد بكرة (${dueDay} بالشهر)`;
+    else if (diff === 0) sub = 'بيتجدد اليوم';
+    else sub = `متأخر ${daysText(-diff)}`;
+    const c = st.categories.find((x) => x.id === r.categoryId);
+    const id = `rec:${r.id}:${key}`;
+    rows.push(swipeable(h('div', { class: 'row' },
+      badge(r.icon || catIcon(c), r.tint || catTint(c), 40),
+      h('span', { class: 'row-main' }, h('span', { class: 'row-title' }, `تجديد «${r.name}»`), h('span', { class: `row-sub ${diff < 0 ? 'warn' : ''}`.trim() }, `${sub}، ${fmt(r.amount, r.currency)}`)),
       h('button', {
         class: 'btn secondary small', type: 'button',
-        onclick: () => openAddSheet({ type: 'expense', amount: c.budget, accountId: 'acc_usd', categoryId: c.id }),
-      }, 'سجّل')));
+        onclick: () => openAddSheet({ type: 'expense', amount: r.amount, accountId: r.accountId || accFor(r.currency)?.id, categoryId: r.categoryId, note: r.name, recurringId: r.id }),
+      }, 'دفعته')), () => dismiss(id, r.name)));
   }
   if (!rows.length) return null;
-  return group('مستحقات هالشهر', rows.slice(0, 4));
+  return group('مستحقات هالشهر', rows.slice(0, 5), { action: rows.length ? h('span', { class: 'muted', style: { fontSize: '11.5px' } }, 'اسحب لتزيل') : null });
 }
 
 /* ---------- تنبيهات ---------- */

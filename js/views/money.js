@@ -1,12 +1,12 @@
 // المال: المحافظ وأسعار الصرف، ومنها للديون والزكاة
-import { h, icon, toast, fill, segmented, haptic } from '../ui.js';
+import { h, icon, toast, fill, segmented, haptic, openPicker, dateButton } from '../ui.js';
 import { badge } from '../icons.js';
 import { store, uid } from '../store.js';
 import { CURRENCIES, CODES, fmt, toUSD, rateText, parseAmount } from '../money.js';
 import { relTime, currentMonth, monthLabel, longDate, hijriDate, daysUntil, daysText } from '../dates.js';
 import { accountBalances, netWorth, debtRemaining, debtPaid } from '../calc.js';
 import { group, emptyState } from '../components.js';
-import { openAccountForm, openTxForm, openRateForm } from '../forms.js';
+import { openAccountForm, openTxForm, openRateForm, live } from '../forms.js';
 import { refreshRates } from '../rates.js';
 import { openDebtForm } from '../debts.js';
 import { computeZakat, zakatDueDate, refreshMetals, openMetalForm, openZakatPayForm, NISAB_GRAMS, KARATS, ZAKAT_RATE } from '../zakat.js';
@@ -190,8 +190,14 @@ export function renderZakat() {
     h('div', { class: 'row' },
       badge('ring', 'gold', 40),
       h('span', { class: 'row-main' }, h('span', { class: 'row-title' }, 'ذهب (غرام)'), h('span', { class: 'row-sub' }, 'للادخار أو التجارة')),
-      h('select', { class: 'inline-select', value: String(z.goldKarat || 24), 'aria-label': 'عيار الذهب', onchange: (e) => commit((s) => { s.zakat.goldKarat = Number(e.target.value); }) },
-        KARATS.map((k) => h('option', { value: String(k) }, `عيار ${k}`))),
+      live((refresh) => h('button', {
+        type: 'button', class: 'chip', 'aria-label': 'عيار الذهب',
+        onclick: () => openPicker({
+          title: 'عيار الذهب', value: Number(store.state.zakat.goldKarat || 24),
+          options: KARATS.map((k) => ({ value: k, label: `عيار ${k}`, sub: k === 24 ? 'صافي' : `${Math.round((k / 24) * 1000) / 10}% ذهب` })),
+          onPick: (v) => { commit((s) => { s.zakat.goldKarat = v; }); refresh(); },
+        }),
+      }, `عيار ${store.state.zakat.goldKarat || 24}`, icon('chevD', 14))),
       numInput(z.goldGrams, 'غرامات الذهب', 'goldGrams')),
     h('div', { class: 'row' }, badge('coins', 'slate', 40), h('span', { class: 'row-main' }, h('span', { class: 'row-title' }, 'فضة (غرام)')), numInput(z.silverGrams, 'غرامات الفضة', 'silverGrams')),
     h('div', { class: 'row' }, badge('trend', 'blue', 40), h('span', { class: 'row-main' }, h('span', { class: 'row-title' }, 'أسهم واستثمارات'), h('span', { class: 'row-sub' }, 'قيمتها اليوم')), h('span', { class: 'inline-money' }, '$', numInput(z.stocks, 'قيمة الأسهم بالدولار', 'stocks'))),
@@ -261,7 +267,7 @@ function hawlGroup(st) {
     h('div', { class: 'row-block' },
       h('label', { class: 'field' },
         h('span', { class: 'field-label' }, 'تاريخ آخر زكاة، أو اليوم اللي وصل فيه مالك للنصاب'),
-        h('input', { type: 'date', value: z.lastDate || '', onchange: (e) => store.update((s) => { s.zakat.lastDate = e.target.value || null; }) }),
+        dateButton({ value: z.lastDate || '', placeholder: 'اختار التاريخ', onChange: (v) => store.update((s) => { s.zakat.lastDate = v || null; }) }),
         z.lastDate ? h('span', { class: 'field-hint' }, hijriDate(z.lastDate)) : null)),
   ];
   if (due) {

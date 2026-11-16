@@ -1,13 +1,14 @@
 // الإعدادات والفئات
-import { h, icon, toast, field, confirmSheet, haptic } from '../ui.js';
+import { h, icon, toast, field, confirmSheet, haptic, selectButton } from '../ui.js';
 import { badge } from '../icons.js';
 import { store, APP_VERSION } from '../store.js';
 import { CURRENCIES, fmt } from '../money.js';
 import { relTime } from '../dates.js';
 import { group, navRow } from '../components.js';
-import { openCategoryForm, switchRow } from '../forms.js';
+import { openCategoryForm, switchRow, accountOpts } from '../forms.js';
 import { exportBackup, pickBackupFile } from '../backup.js';
 import { openOnboarding } from '../onboarding.js';
+import { toggleHideAmounts, requirePin, openPinSheet } from '../pin.js';
 
 export const categoriesActions = () => h('button', { class: 'icon-btn', type: 'button', 'aria-label': 'فئة جديدة', onclick: () => openCategoryForm(null, 'expense') }, icon('plus', 20));
 
@@ -22,7 +23,18 @@ export function renderSettings({ open }) {
           onchange: (e) => store.update((s) => { s.settings.name = e.target.value.trim(); }),
         }))),
       switchRow('خبّي المبالغ', 'كل المبالغ بتطلع نجوم، مفيدة إذا بدك تفرجي التطبيق لحدا. فيك تبدّلها من زر العين بالرئيسية.',
-        Boolean(st.settings.hideAmounts), (v) => store.update((s) => { s.settings.hideAmounts = v; })),
+        Boolean(st.settings.hideAmounts), () => toggleHideAmounts()),
+      navRow({
+        iconName: 'lock', tint: 'mint', title: st.settings.pinHash ? 'غيّر الرمز السري' : 'حط رمز سري',
+        sub: st.settings.pinHash ? 'إظهار المبالغ وتعديل الميزانية بيطلبوا الرمز.' : 'بلا رمز، أي حدا بيقدر يضغط العين ويشوف المبالغ.',
+        onclick: () => (st.settings.pinHash
+          ? requirePin(() => setTimeout(() => openPinSheet({ mode: 'set', onSuccess: () => toast('تغيّر الرمز') }), 320), 'دخّل الرمز الحالي')
+          : openPinSheet({ mode: 'set', onSuccess: () => toast('انحفظ الرمز') })),
+      }),
+      st.settings.pinHash ? h('button', {
+        class: 'row danger-row', type: 'button',
+        onclick: () => requirePin(() => { store.update((s) => { s.settings.pinHash = null; s.settings.hideAmounts = false; }); toast('انشال الرمز'); }, 'دخّل الرمز لتشيله'),
+      }, 'شيل الرمز السري') : null,
     ]),
 
     group('الفئات', [
@@ -36,8 +48,7 @@ export function renderSettings({ open }) {
     group('الإدخال السريع', [
       h('div', { class: 'row-block' },
         field('المحفظة الافتراضية',
-          h('select', { value: st.settings.defaultAccountId, onchange: (e) => store.update((s) => { s.settings.defaultAccountId = e.target.value; }) },
-            st.accounts.map((a) => h('option', { value: a.id }, `${a.name} (${CURRENCIES[a.currency].symbol})`))))),
+          selectButton({ value: st.settings.defaultAccountId, options: accountOpts(), title: 'المحفظة الافتراضية', onChange: (v) => store.update((s) => { s.settings.defaultAccountId = v; }) }))),
       h('p', { class: 'row-note' }, 'إذا كتبت العملة مع المبلغ، متل «200 تركي مواصلات»، بتنسجل على محفظة هالعملة. وفيك تحكي بمايك الكيبورد بدل ما تكتب.'),
     ]),
 
@@ -80,7 +91,10 @@ function installRows() {
     h('span', { class: 'row-sub wrap' }, 'أندرويد: قائمة كروم ⋮ ← «تثبيت التطبيق». آيفون: من سفاري زر المشاركة ← «إضافة إلى الشاشة الرئيسية».')))];
 }
 
-async function resetAll() {
+function resetAll() {
+  requirePin(() => setTimeout(resetAllConfirmed, 320), 'دخّل الرمز لتحذف البيانات');
+}
+async function resetAllConfirmed() {
   const ok = await confirmSheet('حذف كل البيانات؟', 'رح تنمسح كل العمليات والمحافظ والخطة من هالجهاز. ما في رجعة إلا من نسخة احتياطية.', 'احذف كل شي');
   if (!ok) return;
   store.reset();
