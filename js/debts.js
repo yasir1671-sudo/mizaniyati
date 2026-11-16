@@ -1,5 +1,6 @@
 // الديون: إلك عند الناس (theyOwe) وعليك للناس (iOwe)، مع الدفعات وأثرها على المحافظ
-import { h, fill, openSheet, confirmSheet, toast, field, segmented, icon } from './ui.js';
+import { h, fill, openSheet, confirmSheet, toast, field, segmented, icon, selectButton, dateButton } from './ui.js';
+import { accountOpts, currencyPicker, live } from './forms.js';
 import { store, uid } from './store.js';
 import { CURRENCIES, CODES, fmt, parseAmount, toUSD } from './money.js';
 import { todayISO, dayLabel } from './dates.js';
@@ -61,8 +62,7 @@ export function openDebtForm(debt = null, direction = 'theyOwe') {
             h('label', { class: 'check' },
               h('input', { type: 'checkbox', checked: d.move, onchange: (e) => { d.move = e.target.checked; render(); } }),
               theyOwe ? 'طلعت المصاري من محفظة' : 'دخلت المصاري على محفظة'),
-            d.move ? field('المحفظة', h('select', { value: d.accountId, onchange: (e) => { d.accountId = e.target.value; } },
-              accs.map((a) => h('option', { value: a.id }, a.name)))) : null,
+            d.move ? field('المحفظة', selectButton({ value: d.accountId, options: accountOpts({ currency: d.currency }), title: 'المحفظة', onChange: (v) => { d.accountId = v; render(); } })) : null,
           ]
           : h('p', { class: 'hint' }, `ما عندك محفظة بـ ${CURRENCIES[d.currency].name}، فرصيد المحافظ ما رح يتغيّر.`);
       }
@@ -74,11 +74,10 @@ export function openDebtForm(debt = null, direction = 'theyOwe') {
         field(theyOwe ? 'مين أخد منك؟' : 'مين أعطاك؟', h('input', { type: 'text', value: d.person, placeholder: 'الاسم', 'data-autofocus': !editing, oninput: (e) => { d.person = e.target.value; } })),
         h('div', { class: 'two' },
           field('المبلغ', h('input', { type: 'text', inputmode: 'decimal', value: d.amount, placeholder: '0', oninput: (e) => { d.amount = e.target.value; } })),
-          field('العملة', h('select', { value: d.currency, disabled: hasPayments, onchange: (e) => { d.currency = e.target.value; render(); } },
-            CODES.map((c) => h('option', { value: c }, CURRENCIES[c].name))))),
+          field('العملة', currencyPicker(d.currency, (v) => { d.currency = v; render(); }, { disabled: hasPayments }))),
         h('div', { class: 'two' },
-          field('التاريخ', h('input', { type: 'date', value: d.date, onchange: (e) => { d.date = e.target.value; } })),
-          field(theyOwe ? 'إيمتى بيرجع؟' : 'إيمتى لازم تسدّه؟', h('input', { type: 'month', value: d.due, onchange: (e) => { d.due = e.target.value; } }))),
+          field('التاريخ', dateButton({ value: d.date, onChange: (v) => { d.date = v; render(); } })),
+          field(theyOwe ? 'إيمتى بيرجع؟' : 'إيمتى لازم تسدّه؟', dateButton({ value: d.due, mode: 'month', placeholder: 'بلا موعد', allowEmpty: true, onChange: (v) => { d.due = v; render(); } }))),
         h('p', { class: 'hint' }, theyOwe
           ? 'الموعد اختياري. إذا حطيته، بينحسب بالخطة كمبلغ راجع إلك بهالشهر.'
           : 'الموعد اختياري. إذا حطيته، بينحسب بالخطة كالتزام بهالشهر.'),
@@ -186,10 +185,12 @@ export function openPaymentForm(debt) {
     fill(body, [
       h('p', { class: 'hint' }, `الباقي ${fmt(rem, debt.currency)}.`),
       h('div', { class: 'amount-wrap' }, c.prefix ? [sym, amountInput] : [amountInput, sym]),
-      field(theyOwe ? 'دخلت المصاري على' : 'طلعت المصاري من', h('select', { value: d.accountId, onchange: (e) => { d.accountId = e.target.value; } },
-        accs.map((a) => h('option', { value: a.id }, a.name)),
-        h('option', { value: '' }, 'ولا محفظة'))),
-      field('التاريخ', h('input', { type: 'date', value: d.date, onchange: (e) => { d.date = e.target.value; } })),
+      field(theyOwe ? 'دخلت المصاري على' : 'طلعت المصاري من', live((refresh) => selectButton({
+        value: d.accountId, title: 'المحفظة',
+        options: [...accountOpts({ currency: debt.currency }), { value: '', label: 'ولا محفظة', sub: 'رصيد المحافظ ما بيتغيّر', icon: 'close', tint: 'slate' }],
+        onChange: (v) => { d.accountId = v; refresh(); },
+      }))),
+      field('التاريخ', live((refresh) => dateButton({ value: d.date, onChange: (v) => { d.date = v; refresh(); } }))),
       err,
       h('button', { class: 'btn violet block', type: 'button', onclick: save }, 'حفظ الدفعة'),
     ]);

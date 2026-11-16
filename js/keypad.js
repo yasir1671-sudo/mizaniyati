@@ -1,10 +1,11 @@
 // لوحة الإضافة السريعة: أزرار أرقام (مع جمع وطرح)، أيقونات الفئات، المحفظة والتاريخ
-import { h, icon, fill, openSheet, toast, haptic, segmented } from './ui.js';
+import { h, icon, fill, openSheet, toast, haptic, segmented, openPicker, openDatePicker } from './ui.js';
 import { badge } from './icons.js';
 import { store, uid, catLabel } from './store.js';
-import { CURRENCIES, fmt, fmtNumber, rateOf } from './money.js';
+import { CURRENCIES, fmt, fmtNumber, rateOf, fromUSD } from './money.js';
+import { debtRemaining } from './calc.js';
 import { todayISO, dayLabel } from './dates.js';
-import { openTxForm } from './forms.js';
+import { openTxForm, accountOpts } from './forms.js';
 
 const TYPES = [
   { value: 'expense', label: 'مصروف', icon: 'arrowDown' },
@@ -38,8 +39,13 @@ export function openAddSheet(prefill = {}) {
     date: prefill.date || todayISO(),
     note: prefill.note || '',
     sourceId: prefill.sourceId || null,
+    recurringId: prefill.recurringId || null,
+    debtId: prefill.debtId || null,
     showNote: Boolean(prefill.note),
   };
+  // فئة سداد الدين: بتطلع أسماء الناس، والعملية بتنسجل كدفعة على دينهم
+  const DEBT_CAT = { income: 'inc_debt', expense: 'cat_debtpay' };
+  const debtMode = () => d.categoryId === DEBT_CAT[d.type];
 
   openSheet('عملية جديدة', (body, close) => {
     let valEl = null;
@@ -89,10 +95,28 @@ export function openAddSheet(prefill = {}) {
           type: 'button', class: 'cat-choice', 'aria-pressed': String(c.id === d.categoryId),
           onclick: (e) => {
             haptic('select');
+            const wasDebt = debtMode();
             d.categoryId = c.id;
+            if (wasDebt || debtMode()) { render(); return; }
             for (const b of catGrid.children) b.setAttribute('aria-pressed', String(b === e.currentTarget));
           },
         }, badgeWithTint(c), h('span', null, c.name))));
+
+      // مين رجّعلك / لمين سددت
+      let peopleRow = null;
+      if (debtMode()) {
+        const dir = d.type === 'income' ? 'theyOwe' : 'iOwe';
+        const open = s.debts.filter((x) => x.direction === dir && debtRemaining(x) > 0.005);
+        if (!open.some((x) => x.id === d.debtId)) d.debtId = open[0]?.id || null;
+        peopleRow = open.length
+          ? h('div', { class: 'people-row', role: 'group', 'aria-label': dir === 'theyOwe' ? 'مين رجّعلك؟' : 'لمين سددت؟' },
+            h('span', { class: 'people-label' }, dir === 'theyOwe' ? 'مين رجّعلك؟' : 'لمين سددت؟'),
+            open.map((x) => h('button', {
+              type: 'button', class: 'chip', 'aria-pressed': String(x.id === d.debtId),
+              onclick: () => { haptic('select'); d.debtId = x.id; render(); },
+            }, x.person, h('small', null, fmt(debtRemaining(x), x.currency)))))
+          : h('p', { class: 'hint' }, dir === 'theyOwe' ? 'ما في حدا مسجّل إلك عنده دين. بتنسجل كدخل عادي.' : 'ما في دين مسجّل عليك. بتنسجل كمصروف عادي.');
+      }
 
       const noteInput = d.showNote
         ? h('input', { type: 'text', value: d.note, placeholder: 'ملاحظة (اختياري)', oninput: (e) => { d.note = e.target.value; }, style: { marginBottom: '10px' } })
@@ -113,15 +137,19 @@ export function openAddSheet(prefill = {}) {
         }, 'نوع العملية')),
         h('div', { class: 'add-amount' }, valEl, exprEl),
         h('div', { class: 'add-meta' },
-          h('label', { class: 'meta-chip' }, icon('wallet', 16), acc?.name || '',
-            h('select', { value: d.accountId, 'aria-label': 'المحفظة', onchange: (e) => { d.accountId = e.target.value; render(); } },
-              s.accounts.map((a) => h('option', { value: a.id }, `${a.name} (${CURRENCIES[a.currency].symbol})`)))),
-          h('label', { class: 'meta-chip' }, icon('calendar', 16), dayLabel(d.date),
-            h('input', { type: 'date', value: d.date, 'aria-label': 'التاريخ', onchange: (e) => { if (e.target.value) { d.date = e.target.value; render(); } } })),
+          h('button', {
+            type: 'button', class: 'meta-chip', 'aria-label': `المحفظة: ${acc?.name || ''}`,
+            onclick: () => openPicker({ title: 'المحفظة', options: accountOpts(), value: d.accountId, onPick: (v) => { d.accountId = v; render(); } }),
+          }, icon('wallet', 16), acc?.name || ''),
+          h('button', {
+            type: 'button', class: 'meta-chip', 'aria-label': `التاريخ: ${dayLabel(d.date)}`,
+            onclick: () => openDatePicker({ value: d.date, onPick: (v) => { d.date = v; render(); } }),
+          }, icon('calendar', 16), dayLabel(d.date)),
           h('button', { type: 'button', class: 'meta-chip', onclick: () => { d.showNote = !d.showNote; render(); } }, icon('note', 16), d.note ? 'الملاحظة' : 'ملاحظة'),
           h('button', { type: 'button', class: 'meta-chip', 'aria-label': 'تفاصيل أكتر: سعر الصرف وغيره', onclick: () => more() }, icon('sliders', 16))),
         noteInput,
         catGrid,
+        peopleRow,
         h('div', { class: 'keypad' },
           key('7', '7'), key('8', '8'), key('9', '9'), key(icon('backspace', 22), 'del', 'op'),
           key('4', '4'), key('5', '5'), key('6', '6'), key('+', '+', 'op'),
@@ -150,10 +178,12 @@ export function openAddSheet(prefill = {}) {
       const cur = currency();
       const rate = rateOf(s, cur);
       if (!rate) { toast(`حدد سعر ${CURRENCIES[cur].name}.`, { kind: 'warn' }); more(); return; }
+      if (debtMode() && d.debtId) { saveDebtPayment(amount, cur, rate); return; }
       const categoryId = d.categoryId || (d.type === 'income' ? 'inc_other' : 'cat_other');
       const tx = {
         id: uid('tx'), type: d.type, date: d.date, accountId: d.accountId, amount, categoryId,
-        note: d.note.trim(), usd: amount / rate, createdAt: Date.now(), ...(d.sourceId ? { sourceId: d.sourceId } : {}),
+        note: d.note.trim(), usd: amount / rate, createdAt: Date.now(),
+        ...(d.sourceId ? { sourceId: d.sourceId } : {}), ...(d.recurringId ? { recurringId: d.recurringId } : {}),
       };
       store.update((x) => { x.transactions.push(tx); });
       close();
@@ -161,6 +191,40 @@ export function openAddSheet(prefill = {}) {
       const c = s.categories.find((x) => x.id === categoryId);
       toast(`${d.type === 'income' ? 'انضاف دخل' : 'انضاف'} ${fmt(amount, cur)} على ${catLabel(c)}`, {
         action: 'تراجع', onAction: () => store.update((x) => { x.transactions = x.transactions.filter((t) => t.id !== tx.id); }),
+      });
+    }
+
+    // دفعة على دين: بتنقص الباقي، وبتحرّك المحفظة
+    function saveDebtPayment(amount, cur, rate) {
+      const s = store.state;
+      const debt = s.debts.find((x) => x.id === d.debtId);
+      if (!debt) return;
+      const usd = amount / rate;
+      const debtAmt = debt.currency === cur ? amount : fromUSD(s, usd, debt.currency);
+      if (!Number.isFinite(debtAmt)) { toast(`حدد سعر ${CURRENCIES[debt.currency].name}.`, { kind: 'warn' }); return; }
+      const rem = debtRemaining(debt);
+      if (debtAmt > rem * 1.005 + 0.01) { haptic('warn'); toast(`المبلغ أكتر من الباقي على ${debt.person} (${fmt(rem, debt.currency)}).`, { kind: 'warn' }); return; }
+      const paymentId = uid('pay');
+      const txId = uid('tx');
+      const theyOwe = debt.direction === 'theyOwe';
+      store.update((x) => {
+        const dd = x.debts.find((k) => k.id === debt.id);
+        dd.payments = [...(dd.payments || []), { id: paymentId, amount: Math.min(rem, Math.round(debtAmt * 100) / 100), date: d.date, txId }];
+        x.transactions.push({
+          id: txId, type: 'debt', debtId: debt.id, paymentId, flow: theyOwe ? 'in' : 'out',
+          accountId: d.accountId, amount, usd, date: d.date, note: d.note.trim() || debt.person, createdAt: Date.now(),
+        });
+      });
+      close();
+      haptic('success');
+      const left = rem - debtAmt;
+      toast(left < 0.5 ? `خلص دين ${debt.person}` : `${theyOwe ? `رجّعلك ${debt.person}` : `سددت لـ ${debt.person}`} ${fmt(amount, cur)}. الباقي ${fmt(left, debt.currency)}`, {
+        action: 'تراجع',
+        onAction: () => store.update((x) => {
+          const dd = x.debts.find((k) => k.id === debt.id);
+          if (dd) dd.payments = (dd.payments || []).filter((p) => p.id !== paymentId);
+          x.transactions = x.transactions.filter((t) => t.id !== txId);
+        }),
       });
     }
 

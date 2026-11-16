@@ -1,5 +1,6 @@
 // أدوات الواجهة: إنشاء العناصر، الورقة المنزلقة، الإشعارات، الاهتزاز
-import { icon } from './icons.js';
+import { icon, badge } from './icons.js';
+import { MONTHS, iso, parseISO, todayISO, dayLabel, monthLabel, addMonths } from './dates.js';
 
 export { icon };
 
@@ -92,7 +93,7 @@ export function openSheet(title, build, { onClose, tall = false } = {}) {
     if (e.target.closest('button, input, select, textarea')) return;
     startY = e.clientY; lastY = e.clientY; lastT = performance.now();
     panel.classList.add('dragging');
-    panel.setPointerCapture?.(e.pointerId);
+    try { panel.setPointerCapture?.(e.pointerId); } catch { /* */ }
   };
   const onMove = (e) => {
     if (startY == null) return;
@@ -172,6 +173,171 @@ export function segmented(options, value, onChange, label) {
       type: 'button', 'aria-pressed': String(o.value === value),
       onclick: () => { if (o.value !== value) haptic('select'); onChange(o.value); },
     }, o.icon ? icon(o.icon, 16) : null, o.label)));
+}
+
+/* ---------- نوافذ اختيار من ثيم التطبيق (بدل نوافذ كروم) ---------- */
+// options: [{ value, label, sub, icon, tint }]
+export function openPicker({ title, options, value, onPick }) {
+  openSheet(title, (body, close) => {
+    fill(body, [h('div', { class: 'rows sheet-rows pick-list' }, options.map((o) => h('button', {
+      class: 'row', type: 'button', 'aria-pressed': String(o.value === value),
+      onclick: () => { haptic('select'); onPick(o.value); close(); },
+    },
+    o.icon ? badge(o.icon, o.tint || 'slate', 38) : null,
+    h('span', { class: 'row-main' }, h('span', { class: 'row-title' }, o.label), o.sub ? h('span', { class: 'row-sub' }, o.sub) : null),
+    o.value === value ? h('span', { class: 'pick-check' }, icon('check', 20, { stroke: 2.2 })) : null)))]);
+  });
+}
+
+// زر شكله متل الحقل، بيفتح نافذة الاختيار
+export function selectButton({ value, options, onChange, title, placeholder = 'اختار', disabled = false }) {
+  const current = options.find((o) => o.value === value);
+  return h('button', {
+    type: 'button', class: 'select-btn', disabled,
+    onclick: () => openPicker({ title, options, value, onPick: onChange }),
+  },
+  current?.icon ? badge(current.icon, current.tint || 'slate', 26) : null,
+  h('span', { class: current ? 'sb-val' : 'sb-val ph' }, current ? current.label : placeholder),
+  icon('chevD', 18));
+}
+
+const WEEK = ['س', 'ح', 'ن', 'ث', 'ر', 'خ', 'ج']; // بتبلّش بالسبت
+
+// تقويم: اختيار يوم
+export function openDatePicker({ value, onPick, title = 'التاريخ' }) {
+  const today = todayISO();
+  let shown = (value || today).slice(0, 7);
+  openSheet(title, (body, close) => {
+    const pick = (d) => { haptic('select'); onPick(d); close(); };
+    function render() {
+      const [y, m] = shown.split('-').map(Number);
+      const first = new Date(y, m - 1, 1);
+      const offset = (first.getDay() + 1) % 7; // السبت = 0
+      const dim = new Date(y, m, 0).getDate();
+      const cells = [];
+      for (let i = 0; i < offset; i++) cells.push(h('span'));
+      for (let d = 1; d <= dim; d++) {
+        const ds = iso(new Date(y, m - 1, d));
+        cells.push(h('button', {
+          type: 'button', class: `cal-day${ds === value ? ' on' : ''}${ds === today ? ' today' : ''}`,
+          onclick: () => pick(ds),
+        }, String(d)));
+      }
+      const y1 = new Date(); y1.setDate(y1.getDate() - 1);
+      const y2 = new Date(); y2.setDate(y2.getDate() - 2);
+      fill(body, [
+        h('div', { class: 'chips', style: { marginBottom: '14px' } },
+          h('button', { type: 'button', class: 'chip', 'aria-pressed': String(value === today), onclick: () => pick(today) }, 'اليوم'),
+          h('button', { type: 'button', class: 'chip', 'aria-pressed': String(value === iso(y1)), onclick: () => pick(iso(y1)) }, 'أمس'),
+          h('button', { type: 'button', class: 'chip', 'aria-pressed': String(value === iso(y2)), onclick: () => pick(iso(y2)) }, 'قبل يومين')),
+        h('div', { class: 'cal-nav' },
+          h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'الشهر السابق', onclick: () => { shown = addMonths(shown, -1); render(); } }, icon('chevR', 20)),
+          h('strong', null, monthLabel(shown)),
+          h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'الشهر التالي', onclick: () => { shown = addMonths(shown, 1); render(); } }, icon('chevL', 20))),
+        h('div', { class: 'cal-grid cal-week' }, WEEK.map((w) => h('span', null, w))),
+        h('div', { class: 'cal-grid' }, cells),
+      ]);
+    }
+    render();
+  });
+}
+
+// اختيار شهر
+export function openMonthPicker({ value, onPick, title = 'الشهر', allowEmpty = false, emptyLabel = 'بلا موعد' }) {
+  let year = Number((value || todayISO()).slice(0, 4));
+  openSheet(title, (body, close) => {
+    const pick = (v) => { haptic('select'); onPick(v); close(); };
+    function render() {
+      fill(body, [
+        h('div', { class: 'cal-nav' },
+          h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'السنة السابقة', onclick: () => { year -= 1; render(); } }, icon('chevR', 20)),
+          h('strong', null, String(year)),
+          h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'السنة التالية', onclick: () => { year += 1; render(); } }, icon('chevL', 20))),
+        h('div', { class: 'month-grid' }, MONTHS.map((name, i) => {
+          const v = `${year}-${String(i + 1).padStart(2, '0')}`;
+          return h('button', { type: 'button', class: `month-cell${v === value ? ' on' : ''}${v === todayISO().slice(0, 7) ? ' today' : ''}`, onclick: () => pick(v) }, name);
+        })),
+        allowEmpty ? h('button', { type: 'button', class: 'btn secondary block', onclick: () => pick('') }, emptyLabel) : null,
+      ]);
+    }
+    render();
+  });
+}
+
+// اختيار يوم من الشهر (1 لـ 31)
+export function openDayPicker({ value, onPick, title = 'يوم بالشهر' }) {
+  openSheet(title, (body, close) => {
+    fill(body, [h('div', { class: 'cal-grid days31' }, Array.from({ length: 31 }, (_, i) => i + 1).map((d) => h('button', {
+      type: 'button', class: `cal-day${d === value ? ' on' : ''}`,
+      onclick: () => { haptic('select'); onPick(d); close(); },
+    }, String(d))))]);
+  });
+}
+
+// زر تاريخ أو شهر بشكل الحقل
+export function dateButton({ value, onChange, mode = 'day', placeholder = 'اختار', allowEmpty = false, title, emptyLabel }) {
+  let label = placeholder;
+  if (value) label = mode === 'month' ? monthLabel(value) : dayLabel(value);
+  return h('button', {
+    type: 'button', class: 'select-btn',
+    onclick: () => (mode === 'month'
+      ? openMonthPicker({ value, onPick: onChange, allowEmpty, title, emptyLabel })
+      : openDatePicker({ value, onPick: onChange, title })),
+  }, icon('calendar', 18), h('span', { class: value ? 'sb-val' : 'sb-val ph' }, label), icon('chevD', 18));
+}
+
+export function dayButton({ value, onChange, title }) {
+  return h('button', { type: 'button', class: 'select-btn', onclick: () => openDayPicker({ value, onPick: onChange, title }) },
+    icon('calendar', 18), h('span', { class: value ? 'sb-val' : 'sb-val ph' }, value ? `${value} بالشهر` : 'اختار اليوم'), icon('chevD', 18));
+}
+
+export { parseISO };
+
+/* ---------- السحب يمين أو يسار لإزالة تذكير (لازم سحبة مقصودة، مش كبسة) ---------- */
+export function swipeable(el, onDismiss) {
+  let x0 = null;
+  let y0 = 0;
+  let dx = 0;
+  let active = false;
+  let width = 1;
+  el.classList.add('swipe');
+  el.addEventListener('pointerdown', (e) => {
+    if (e.target.closest('button, input')) return;
+    x0 = e.clientX; y0 = e.clientY; dx = 0; active = false; width = el.offsetWidth || 1;
+  });
+  el.addEventListener('pointermove', (e) => {
+    if (x0 == null) return;
+    const mx = e.clientX - x0;
+    const my = e.clientY - y0;
+    if (!active) {
+      if (Math.abs(my) > 14 && Math.abs(my) > Math.abs(mx)) { x0 = null; return; }
+      if (Math.abs(mx) < 14 || Math.abs(mx) < Math.abs(my) * 1.4) return;
+      active = true;
+      try { el.setPointerCapture?.(e.pointerId); } catch { /* */ }
+      el.classList.add('swiping');
+    }
+    dx = mx;
+    el.style.transform = `translate3d(${dx}px, 0, 0)`;
+    el.style.opacity = String(Math.max(0.25, 1 - Math.abs(dx) / width));
+  });
+  const end = () => {
+    if (x0 == null) return;
+    x0 = null;
+    if (!active) return;
+    el.classList.remove('swiping');
+    if (Math.abs(dx) > width * 0.42) {
+      haptic('select');
+      el.style.transform = `translate3d(${dx > 0 ? width : -width}px, 0, 0)`;
+      el.style.opacity = '0';
+      setTimeout(onDismiss, 170);
+    } else {
+      el.style.transform = '';
+      el.style.opacity = '';
+    }
+  };
+  el.addEventListener('pointerup', end);
+  el.addEventListener('pointercancel', end);
+  return el;
 }
 
 // اختيار أيقونة ولون (للفئات والأغراض والأهداف)

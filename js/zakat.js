@@ -1,5 +1,6 @@
 // الزكاة: المال الزكوي، النصاب (ذهب أو فضة)، الحول، وأسعار المعادن
-import { h, fill, openSheet, toast, field, segmented } from './ui.js';
+import { h, fill, openSheet, toast, field, segmented, selectButton, dateButton } from './ui.js';
+import { accountOpts } from './forms.js';
 import { store, uid } from './store.js';
 import { CURRENCIES, fmt, parseAmount, rateOf, toUSD, roundTo } from './money.js';
 import { todayISO, addDays } from './dates.js';
@@ -151,10 +152,9 @@ export function openZakatPayForm(amountUSD, dueDate) {
       err = h('p', { class: 'form-error', role: 'alert' });
       fill(body, [
         h('p', { class: 'hint' }, `زكاتك المحسوبة ${fmt(amountUSD)}. رح تنسجل كمصروف بفئة «صدقة وزكاة»، وما بتأثر على مصروف اليوم.`),
-        field('من محفظة', h('select', { value: d.accountId, onchange: (e) => { d.accountId = e.target.value; d.touched = false; render(); } },
-          s.accounts.map((a) => h('option', { value: a.id }, `${a.name} (${CURRENCIES[a.currency].symbol})`)))),
+        field('من محفظة', selectButton({ value: d.accountId, options: accountOpts(), title: 'المحفظة', onChange: (v) => { d.accountId = v; d.touched = false; render(); } })),
         field(`المبلغ بـ ${CURRENCIES[cur].name}`, h('input', { type: 'text', inputmode: 'decimal', value: d.amount, oninput: (e) => { d.amount = e.target.value; d.touched = true; } })),
-        field('التاريخ', h('input', { type: 'date', value: d.date, onchange: (e) => { d.date = e.target.value; } })),
+        field('التاريخ', dateButton({ value: d.date, onChange: (v) => { d.date = v; render(); } })),
         err,
         h('button', { class: 'btn violet block', type: 'button', onclick: save }, 'تم، دفعتها'),
       ]);

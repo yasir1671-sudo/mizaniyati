@@ -1,7 +1,8 @@
 // المخطِّط: توزيع المشتريات والالتزامات على 12 شهر حسب الفائض، والأهداف
 import { toUSD } from './money.js';
-import { addMonths, currentMonth, monthsBetween, monthLabel, monthsText } from './dates.js';
-import { expectedIncome, budgetTotals, debtRemaining } from './calc.js';
+import { addMonths, currentMonth, monthsBetween, monthLabel, monthsText, todayISO } from './dates.js';
+import { store } from './store.js';
+import { expectedIncome, budgetTotals, debtRemaining, isCashAware, cashMonth, dailyAllowance, savingsFor } from './calc.js';
 
 export const HORIZON = 12;
 
@@ -22,15 +23,25 @@ function wantOrder(a, b) {
  * الفائض بيتراكم من شهر لشهر. كل غرض بينحط بأول شهر بيكون فيه المتراكم بيكفيه،
  * بشرط ما يصير المتراكم بالسالب بأي شهر بعده (مشان ما ياكل مصاري التزام جاي).
  */
+// الخطة بتنحسب مرة وحدة لكل نسخة من البيانات (كانت تنحسب كذا مرة بكل رسمة)
+let memo = null;
 export function buildPlan(state, { extra = [] } = {}) {
+  const useMemo = !extra.length && state === store.state;
+  const stamp = `${store.version}|${currentMonth()}|${todayISO()}`;
+  if (useMemo && memo && memo.stamp === stamp) return memo.result;
+  const result = computePlan(state, extra);
+  if (useMemo) memo = { stamp, result };
+  return result;
+}
+
+function computePlan(state, extra) {
   const start = currentMonth();
   const months = Array.from({ length: HORIZON }, (_, i) => addMonths(start, i));
   const index = new Map(months.map((m, i) => [m, i]));
   const { fixed, flex } = budgetTotals(state);
-  const savings = Number(state.settings.savingsTarget) || 0;
   const rows = months.map((m) => ({
     month: m, income: expectedIncome(state, m).usd, debtIn: 0, debtOut: 0,
-    living: fixed + flex, savings, commitments: 0, purchases: 0, entries: [],
+    living: fixed + flex, savings: savingsFor(state, m), commitments: 0, purchases: 0, entries: [],
   }));
   const items = [...(state.planItems || []), ...extra];
   const schedule = new Map();
@@ -76,8 +87,29 @@ export function buildPlan(state, { extra = [] } = {}) {
     }
   }
 
+  /*
+   * هالشهر على المصاري الفعلية: بدل الدخل المتوقع منحط اللي معك هلّق + الجاي،
+   * ومنحجز مصروف باقي الأيام والفواتير والادخار والالتزامات. اللي بيبقى بيروح للمشتريات.
+   */
+  let startPool = Math.max(0, Number(state.settings.plannerStart) || 0);
+  let cashMode = false;
+  if (isCashAware(state)) {
+    const today = todayISO();
+    const c = cashMonth(state, today);
+    const a = dailyAllowance(state, today);
+    const flexReserve = Math.max(0, a.perDay * a.daysLeft - a.todaySpent);
+    const extra0 = extra
+      .filter((it) => it.kind === 'commitment' && (!it.month || it.month <= start))
+      .reduce((s, it) => s + (Number.isFinite(itemUSD(state, it)) ? itemUSD(state, it) : 0), 0);
+    Object.assign(rows[0], {
+      cashMode: true, cash: c, flexReserve,
+      income: c.spendable + c.incomeComing, debtIn: c.debtIn, debtOut: c.debtOut,
+      living: flexReserve + c.bills, savings: c.savingsLeft, commitments: c.commits + extra0, purchases: 0,
+    });
+    startPool = 0;
+    cashMode = true;
+  }
   const surplus = rows.map((r) => r.income + r.debtIn - r.living - r.savings - r.commitments - r.purchases - r.debtOut);
-  const startPool = Math.max(0, Number(state.settings.plannerStart) || 0);
   const alloc = new Array(HORIZON).fill(0);
   const wants = items.filter((it) => it.kind === 'want' && it.status !== 'bought' && !schedule.has(it.id)).sort(wantOrder);
 
@@ -111,7 +143,7 @@ export function buildPlan(state, { extra = [] } = {}) {
     spend: t.spend + r.commitments + r.purchases + r.debtOut,
   }), { income: 0, living: 0, savings: 0, spend: 0 });
 
-  return { months, rows, schedule, startPool, endBalance: balance, totals };
+  return { months, rows, schedule, startPool, endBalance: balance, totals, cashMode };
 }
 
 export function scheduleText(it, s) {

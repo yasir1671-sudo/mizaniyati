@@ -1,6 +1,7 @@
 // كل الحسابات: الأرصدة، إحصاءات الشهر، الخطة، ومصروف اليوم
 import { toUSD } from './money.js';
 import { daysInMonth, parseISO } from './dates.js';
+import { incomeStatus } from './income.js';
 
 export function sortTx(list) {
   return [...list].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : (b.createdAt || 0) - (a.createdAt || 0)));
@@ -88,7 +89,7 @@ export function budgetTotals(state) {
 
 export function plan(state, key) {
   const income = expectedIncome(state, key).usd;
-  const savings = Number(state.settings.savingsTarget) || 0;
+  const savings = savingsFor(state, key);
   const { fixed, flex, total } = budgetTotals(state);
   return { income, savings, fixed, flex, total, free: income - savings - total };
 }
@@ -114,6 +115,90 @@ export function dailyAllowance(state, today) {
     if (t.date < today) before += Number(t.usd) || 0;
     else if (t.date === today) todaySpent += Number(t.usd) || 0;
   }
-  const perDay = Math.max(0, pool - before) / daysLeft;
-  return { pool, source, perDay, left: perDay - todaySpent, todaySpent, before, daysLeft, monthLeft: pool - before - todaySpent };
+  const budgetPerDay = Math.max(0, pool - before) / daysLeft;
+  let perDay = budgetPerDay;
+  let monthLeft = pool - before - todaySpent;
+  let cashLimited = false;
+  let cash = null;
+  // على المصاري الفعلية: ما فيك تصرف أكتر من اللي معك (والجاي هالشهر)، حتى لو الميزانية أكبر
+  if (isCashAware(state)) {
+    cash = cashMonth(state, today);
+    const cashPerDay = Math.max(0, cash.pool + todaySpent) / daysLeft;
+    if (source === 'none' || cashPerDay < budgetPerDay - 0.005) {
+      perDay = cashPerDay;
+      monthLeft = cash.pool;
+      cashLimited = true;
+      if (source === 'none') source = 'cash';
+    }
+  }
+  return { pool, source, perDay, budgetPerDay, left: perDay - todaySpent, todaySpent, before, daysLeft, monthLeft, cashLimited, cash };
+}
+
+/* ---------- المصاري الفعلية لهالشهر ---------- */
+export function savingsFor(state, key) {
+  const o = state.settings.monthSavings?.[key];
+  return o != null ? Number(o) || 0 : Number(state.settings.savingsTarget) || 0;
+}
+
+// منحسب على الكاش إذا المستخدم شغّلها، أو تلقائياً إذا عنده أرصدة أو دخل مسجّل
+export function isCashAware(state) {
+  if (state.settings.cashAware === true) return true;
+  if (state.settings.cashAware === false) return false;
+  return state.accounts.some((a) => Number(a.opening)) || state.transactions.some((t) => t.type === 'income' || t.type === 'debt');
+}
+
+/*
+ * معك هلّق (المحافظ العادية) + الجاي هالشهر (دخل ما وصل، ديون راجعة)
+ * − فواتير ثابتة باقية − التزامات الشهر − ديون عليك − ادخار باقي = اللي بيكفيك لآخر الشهر
+ */
+export function cashMonth(state, today) {
+  const key = today.slice(0, 7);
+  const bal = accountBalances(state);
+  let spendable = 0;
+  let savingsHeld = 0;
+  const missing = new Set();
+  for (const a of state.accounts) {
+    const v = bal.get(a.id) || 0;
+    const u = toUSD(state, v, a.currency);
+    if (!Number.isFinite(u)) { if (v) missing.add(a.currency); continue; }
+    if (a.savings) savingsHeld += u; else spendable += u;
+  }
+  const inc = incomeStatus(state, key);
+  let debtIn = 0;
+  let debtOut = 0;
+  for (const d of state.debts) {
+    if (!d.due || d.due > key) continue;
+    const r = debtRemaining(d);
+    if (r < 0.005) continue;
+    const u = toUSD(state, r, d.currency);
+    if (!Number.isFinite(u)) continue;
+    if (d.direction === 'theyOwe') debtIn += u; else debtOut += u;
+  }
+  const ms = monthStats(state, key);
+  let bills = 0;
+  for (const c of state.categories) {
+    if (c.type !== 'expense' || !c.fixed) continue;
+    bills += Math.max(0, (Number(c.budget) || 0) - (ms.byCat.get(c.id) || 0));
+  }
+  let commits = 0;
+  for (const it of state.planItems) {
+    if (it.kind !== 'commitment' || it.status === 'bought' || !it.month || it.month > key) continue;
+    const u = toUSD(state, Number(it.amount) || 0, it.currency);
+    if (Number.isFinite(u)) commits += u;
+  }
+  const savingIds = new Set(state.accounts.filter((a) => a.savings).map((a) => a.id));
+  let saved = 0;
+  for (const t of state.transactions) {
+    if (t.type !== 'transfer' || !t.date.startsWith(key) || !savingIds.has(t.toAccountId) || savingIds.has(t.accountId)) continue;
+    const to = state.accounts.find((a) => a.id === t.toAccountId);
+    const u = toUSD(state, Number(t.toAmount) || 0, to?.currency);
+    if (Number.isFinite(u)) saved += u;
+  }
+  const savingsLeft = Math.max(0, savingsFor(state, key) - saved);
+  const coming = inc.comingUSD + debtIn;
+  const pool = spendable + coming - bills - commits - debtOut - savingsLeft;
+  return {
+    key, spendable, savingsHeld, coming, incomeComing: inc.comingUSD, debtIn, bills, commits, debtOut,
+    savingsLeft, saved, pool, settled: inc.settled, missing: [...missing],
+  };
 }

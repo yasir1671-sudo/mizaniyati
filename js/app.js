@@ -6,7 +6,8 @@ import { refreshRates } from './rates.js';
 import { renderHome } from './views/home.js';
 import { renderActivity } from './views/activity.js';
 import { renderReportsPage } from './views/reports.js';
-import { renderPlanHub, renderPlanMonth, renderPlanYear, renderPlanItems, renderPlanGoals, planActions } from './views/plan.js';
+import { renderPlanHub, renderPlanMonth, renderPlanYear, renderPlanItems, renderPlanGoals, planActions, resetPlanMonth } from './views/plan.js';
+import { renderBills, billsActions } from './views/bills.js';
 import { renderMoneyHub, renderDebts, renderZakat, moneyActions } from './views/money.js';
 import { renderSettings, renderCategories, categoriesActions } from './views/settings.js';
 import { openAddSheet } from './keypad.js';
@@ -18,7 +19,8 @@ const ROUTES = {
   activity: { tab: 'activity', render: renderActivity },
   'activity/reports': { tab: 'activity', parent: 'activity', title: 'تحليل المصاريف', render: renderReportsPage },
   plan: { tab: 'plan', render: renderPlanHub },
-  'plan/month': { tab: 'plan', parent: 'plan', title: 'ميزانية الشهر', render: renderPlanMonth },
+  'plan/month': { tab: 'plan', parent: 'plan', title: 'ميزانية الشهر', render: renderPlanMonth, onEnter: resetPlanMonth },
+  'plan/bills': { tab: 'plan', parent: 'plan', title: 'الاشتراكات والفواتير', render: renderBills, actions: billsActions },
   'plan/year': { tab: 'plan', parent: 'plan', title: 'السنة الجاية', render: renderPlanYear, actions: planActions.year },
   'plan/items': { tab: 'plan', parent: 'plan', title: 'المشتريات والالتزامات', render: renderPlanItems, actions: planActions.items },
   'plan/goals': { tab: 'plan', parent: 'plan', title: 'الأهداف والادخار', render: renderPlanGoals, actions: planActions.goals },
@@ -65,7 +67,7 @@ function back() {
   if (routeStack.length > 1) history.back();
   else { routeStack = [parent]; location.replace(`#/${parent}`); }
 }
-const ctx = { go, open, back };
+const ctx = { go, open, back, refresh: () => render() };
 
 window.addEventListener('hashchange', () => {
   const path = parsePath();
@@ -80,6 +82,7 @@ window.addEventListener('hashchange', () => {
 function navigateTo(path, dir) {
   scrollMemory.set(current, window.scrollY);
   current = path;
+  if (dir !== 'back') ROUTES[path].onEnter?.();
   render({ dir, scroll: dir === 'back' ? (scrollMemory.get(path) || 0) : 0 });
 }
 

@@ -1,5 +1,5 @@
 // نماذج الإضافة والتعديل: العمليات، المحافظ، مصادر الدخل، الفئات، أسعار الصرف
-import { h, icon, fill, openSheet, confirmSheet, toast, field, segmented, iconPicker, haptic } from './ui.js';
+import { h, icon, fill, openSheet, confirmSheet, toast, field, segmented, iconPicker, haptic, selectButton, dateButton, dayButton } from './ui.js';
 import { badge, CATEGORY_ICON_CHOICES, ITEM_ICON_CHOICES, GOAL_ICON_CHOICES, TINT_KEYS, tintHex } from './icons.js';
 import { store, uid, PROTECTED_CATEGORIES } from './store.js';
 import { CURRENCIES, CODES, rateOf, toUSD, fromUSD, fmt, numText, parseAmount, roundTo } from './money.js';
@@ -40,11 +40,36 @@ function revertItem(it) {
   delete it.txId;
 }
 
+/* ---------- خيارات للنوافذ (بدل قوائم كروم) ---------- */
+export const CUR_ICON = { USD: 'cash', TRY: 'coins', SYP: 'bank' };
+export const CUR_TINT = { USD: 'mint', TRY: 'coral', SYP: 'gold' };
+
+export function accountOpts({ exclude = null, currency = null } = {}) {
+  return store.state.accounts
+    .filter((a) => a.id !== exclude && (!currency || a.currency === currency))
+    .map((a) => ({ value: a.id, label: a.name, sub: `${CURRENCIES[a.currency].name}${a.savings ? '، ادخار' : ''}`, icon: CUR_ICON[a.currency] || 'wallet', tint: CUR_TINT[a.currency] || 'slate' }));
+}
+export function currencyOpts() {
+  return CODES.map((c) => ({ value: c, label: CURRENCIES[c].name, sub: CURRENCIES[c].symbol, icon: CUR_ICON[c], tint: CUR_TINT[c] }));
+}
+export function currencyPicker(value, onChange, { disabled = false } = {}) {
+  return selectButton({ value, options: currencyOpts(), onChange, title: 'العملة', disabled });
+}
+
+// عنصر بيعيد بناء حاله لما تتغيّر قيمته (للنماذج اللي ما إلها render)
+export function live(make) {
+  let el = null;
+  const rebuild = () => {
+    const next = make(rebuild);
+    if (el) el.replaceWith(next);
+    el = next;
+    return next;
+  };
+  return rebuild();
+}
+
 function accountSelect(value, onChange, excludeId) {
-  return h('select', { value, onchange: (e) => onChange(e.target.value) },
-    store.state.accounts
-      .filter((a) => a.id !== excludeId)
-      .map((a) => h('option', { value: a.id }, `${a.name} (${CURRENCIES[a.currency].symbol})`)));
+  return selectButton({ value, options: accountOpts({ exclude: excludeId }), onChange, title: 'المحفظة' });
 }
 
 function convert(st, amount, from, to) {
@@ -76,7 +101,8 @@ export function openTxForm({ tx = null, type = 'expense', prefill = {} } = {}) {
       note: prefill.note || '', rate: '', toTouched: false, adopt: true, sourceId: prefill.sourceId || null,
     };
 
-  openSheet(editing ? 'تعديل العملية' : 'عملية جديدة', (body, close) => {
+  const EDIT_TITLE = { expense: 'تعديل المصروف', income: 'تعديل الدخل', transfer: 'تعديل التحويل' };
+  openSheet(editing ? EDIT_TITLE[tx.type] || 'تعديل العملية' : 'عملية جديدة', (body, close) => {
     let hintEl = null;
     let toInput = null;
     let errorEl = null;
@@ -109,8 +135,9 @@ export function openTxForm({ tx = null, type = 'expense', prefill = {} } = {}) {
         oninput: (e) => { d.amount = e.target.value; refreshHints(); },
       });
       const sym = h('span', { class: 'amount-cur' }, c.symbol);
+      // بالتعديل ما في داعي نبدّل النوع: المصروف بيضل مصروف
       const nodes = [
-        segmented(TX_TYPES, d.type, (v) => { d.type = v; render(); }, 'نوع العملية'),
+        editing ? null : segmented(TX_TYPES, d.type, (v) => { d.type = v; render(); }, 'نوع العملية'),
         h('div', { class: 'amount-wrap' }, c.prefix ? [sym, amountInput] : [amountInput, sym]),
       ];
       hintEl = null;
@@ -160,7 +187,7 @@ export function openTxForm({ tx = null, type = 'expense', prefill = {} } = {}) {
       }
 
       nodes.push(h('div', { class: 'two' },
-        field('التاريخ', h('input', { type: 'date', value: d.date, onchange: (e) => { d.date = e.target.value; } })),
+        field('التاريخ', dateButton({ value: d.date, onChange: (v) => { d.date = v; render(); } })),
         field('ملاحظة', h('input', { type: 'text', value: d.note, placeholder: 'اختياري', oninput: (e) => { d.note = e.target.value; } }))));
       errorEl = h('p', { class: 'form-error', role: 'alert' });
       nodes.push(errorEl, h('button', { class: 'btn block', type: 'button', onclick: save }, editing ? 'حفظ التعديل' : SAVE_LABEL[d.type]));
@@ -274,18 +301,18 @@ export function openAccountForm(account = null) {
   const d = {
     name: account?.name || '', currency: account?.currency || 'USD',
     opening: account ? cleanNum(account.opening || 0) : '', isDefault: editing && st.settings.defaultAccountId === account.id,
+    savings: Boolean(account?.savings),
   };
   openSheet(editing ? 'تعديل المحفظة' : 'محفظة جديدة', (body, close) => {
     const err = h('p', { class: 'form-error', role: 'alert' });
     fill(body, [
       field('اسم المحفظة', h('input', { type: 'text', value: d.name, placeholder: 'مثلاً: كاش، بنك، شام كاش', 'data-autofocus':!editing, oninput: (e) => { d.name = e.target.value; } })),
-      field('العملة', h('select', { value: d.currency, disabled: used, onchange: (e) => { d.currency = e.target.value; } },
-        CODES.map((c) => h('option', { value: c }, CURRENCIES[c].name))), used ? 'ما فيك تغيّر العملة لأن عليها عمليات.' : null),
+      field('العملة', live((refresh) => currencyPicker(d.currency, (v) => { d.currency = v; refresh(); }, { disabled: used })), used ? 'ما فيك تغيّر العملة لأن عليها عمليات.' : null),
       field('الرصيد الافتتاحي', h('input', { type: 'text', inputmode: 'decimal', value: d.opening, placeholder: '0', oninput: (e) => { d.opening = e.target.value; } }),
         'المبلغ اللي كان فيها قبل ما تبلّش تسجّل.'),
-      h('label', { class: 'check' },
-        h('input', { type: 'checkbox', checked: d.isDefault, onchange: (e) => { d.isDefault = e.target.checked; } }),
-        'المحفظة الافتراضية للإدخال السريع'),
+      h('div', { class: 'sheet-rows rows' },
+        switchRow('المحفظة الافتراضية', 'المصاريف السريعة بتنسجل عليها.', d.isDefault, (v) => { d.isDefault = v; }),
+        switchRow('محفظة ادخار', 'مصاريها محجوزة: ما بتنحسب بمصروف اليوم ولا بمصاري الشهر. التحويل إلها بينحسب ادخار.', d.savings, (v) => { d.savings = v; })),
       err,
       h('button', { class: 'btn block', type: 'button', onclick: save }, 'حفظ المحفظة'),
       editing ? h('button', { class: 'btn danger block', type: 'button', onclick: remove }, 'حذف المحفظة') : null,
@@ -296,7 +323,7 @@ export function openAccountForm(account = null) {
       if (!name) { err.textContent = 'اكتب اسم المحفظة.'; return; }
       const opening = d.opening === '' ? 0 : parseAmount(d.opening);
       if (!Number.isFinite(opening)) { err.textContent = 'الرصيد لازم يكون رقم.'; return; }
-      const rec = { ...(account || {}), id: account?.id || uid('acc'), name, currency: used ? account.currency : d.currency, opening };
+      const rec = { ...(account || {}), id: account?.id || uid('acc'), name, currency: used ? account.currency : d.currency, opening, savings: d.savings };
       store.update((s) => {
         upsert(s.accounts, rec);
         if (d.isDefault || !s.accounts.some((a) => a.id === s.settings.defaultAccountId)) s.settings.defaultAccountId = rec.id;
@@ -322,15 +349,27 @@ export function openAccountForm(account = null) {
 /* ---------- مصدر دخل ---------- */
 export function openSourceForm(src = null) {
   const editing = Boolean(src);
+  const srcParts = src?.parts?.length ? src.parts : [{ day: src?.day || 1, amount: src?.amount || 0 }];
   const d = {
     kind: src?.kind || 'salary', name: src?.name || '', amount: src ? cleanNum(src.amount) : '',
     currency: src?.currency || 'USD', schedule: src?.schedule || 'monthly', month: src?.month || currentMonth(),
+    day: srcParts[0].day || 1,
+    split: srcParts.length > 1,
+    parts: srcParts.map((p) => ({ day: p.day || 1, amount: p.amount ? cleanNum(p.amount) : '' })),
   };
   openSheet(editing ? 'تعديل مصدر الدخل' : 'مصدر دخل جديد', (body, close) => {
     let err = null;
+    let totalEl = null;
+    const partsTotal = () => d.parts.reduce((s, p) => s + (parseAmount(p.amount) || 0), 0);
     function render() {
       const k = INCOME_KINDS[d.kind];
       err = h('p', { class: 'form-error', role: 'alert' });
+      totalEl = h('p', { class: 'hint' });
+      const partRows = d.split ? d.parts.map((p, i) => h('div', { class: 'part-row' },
+        h('span', { class: 'part-n' }, `${i + 1}`),
+        dayButtonInline(p.day, (v) => { p.day = v; render(); }),
+        h('input', { type: 'text', inputmode: 'decimal', value: p.amount, placeholder: 'المبلغ', 'aria-label': `مبلغ الدفعة ${i + 1}`, oninput: (e) => { p.amount = e.target.value; refreshTotal(); } }),
+        d.parts.length > 2 ? h('button', { type: 'button', class: 'icon-btn ghost', 'aria-label': `احذف الدفعة ${i + 1}`, onclick: () => { d.parts.splice(i, 1); render(); } }, icon('close', 18)) : null)) : null;
       fill(body, [
         h('div', { class: 'field' }, h('span', { class: 'field-label' }, 'النوع'),
           h('div', { class: 'chips', role: 'group', 'aria-label': 'نوع الدخل' },
@@ -340,26 +379,55 @@ export function openSourceForm(src = null) {
               onclick: () => { d.kind = id; if (id === 'debt') d.schedule = 'once'; render(); },
             }, icon(x.icon, 16), x.label)))),
         field('الاسم', h('input', { type: 'text', value: d.name, placeholder: k.placeholder, oninput: (e) => { d.name = e.target.value; } })),
-        h('div', { class: 'two' },
-          field(d.kind === 'stocks' ? 'المعدل الشهري' : 'المبلغ', h('input', { type: 'text', inputmode: 'decimal', value: d.amount, placeholder: '0', oninput: (e) => { d.amount = e.target.value; } })),
-          field('العملة', h('select', { value: d.currency, onchange: (e) => { d.currency = e.target.value; } },
-            CODES.map((c) => h('option', { value: c }, CURRENCIES[c].name))))),
+        d.split
+          ? field('العملة', currencyPicker(d.currency, (v) => { d.currency = v; render(); }))
+          : h('div', { class: 'two' },
+            field(d.kind === 'stocks' ? 'المعدل الشهري' : 'المبلغ', h('input', { type: 'text', inputmode: 'decimal', value: d.amount, placeholder: '0', oninput: (e) => { d.amount = e.target.value; } })),
+            field('العملة', currencyPicker(d.currency, (v) => { d.currency = v; render(); }))),
         d.kind === 'stocks' ? h('p', { class: 'hint' }, 'الأسهم بتطلع وبتنزل. حط الرقم الأقل اللي متأكد منه، والزيادة بتروح للادخار.') : null,
         segmented([{ value: 'monthly', label: 'كل شهر' }, { value: 'once', label: 'مرة وحدة' }], d.schedule, (v) => { d.schedule = v; render(); }, 'التكرار'),
-        d.schedule === 'once' ? field('بأي شهر بيوصل؟', h('input', { type: 'month', value: d.month, onchange: (e) => { d.month = e.target.value; } })) : null,
+        d.schedule === 'once' ? field('بأي شهر بيوصل؟', dateButton({ value: d.month, mode: 'month', onChange: (v) => { d.month = v; render(); } })) : null,
+        d.split ? null : field('إيمتى بيوصل بالشهر؟', dayButtonInline(d.day, (v) => { d.day = v; render(); }), 'بهاليوم بيطلع لك بالرئيسية «وصل؟» مشان تسجّله.'),
+        h('div', { class: 'sheet-rows rows' },
+          switchRow('بيوصل على دفعات', 'متل 300 بـ 4 الشهر، والباقي بـ 8.', d.split, (v) => {
+            d.split = v;
+            if (v && d.parts.length < 2) {
+              const total = parseAmount(d.amount) || 0;
+              const half = Math.round(total / 2);
+              d.parts = [{ day: d.day, amount: total ? String(half) : '' }, { day: Math.min(28, d.day + 4), amount: total ? String(total - half) : '' }];
+            }
+            if (!v) { d.amount = partsTotal() ? cleanNum(partsTotal()) : d.amount; d.day = d.parts[0]?.day || d.day; }
+            render();
+          })),
+        d.split ? h('div', { class: 'field' }, h('span', { class: 'field-label' }, 'الدفعات (اليوم والمبلغ)'), partRows,
+          h('button', { type: 'button', class: 'btn secondary small', onclick: () => { d.parts.push({ day: Math.min(28, (d.parts.at(-1)?.day || 1) + 3), amount: '' }); render(); } }, icon('plus', 16), 'دفعة كمان'),
+          totalEl) : null,
         err,
         h('button', { class: 'btn block', type: 'button', onclick: save }, 'حفظ مصدر الدخل'),
         editing ? h('button', { class: 'btn danger block', type: 'button', onclick: remove }, 'حذف مصدر الدخل') : null,
       ]);
+      refreshTotal();
+    }
+
+    function refreshTotal() {
+      if (totalEl) totalEl.textContent = d.split ? `المجموع بالشهر ${fmt(partsTotal(), d.currency)}` : '';
     }
 
     function save() {
-      const amount = parseAmount(d.amount);
+      let parts;
+      let amount;
+      if (d.split) {
+        parts = d.parts.map((p) => ({ day: p.day, amount: parseAmount(p.amount) })).filter((p) => p.amount > 0).sort((a, b) => a.day - b.day);
+        amount = parts.reduce((s, p) => s + p.amount, 0);
+      } else {
+        amount = parseAmount(d.amount);
+        parts = [{ day: d.day, amount }];
+      }
       if (!(amount > 0)) { err.textContent = 'اكتب المبلغ.'; return; }
       if (d.schedule === 'once' && !/^\d{4}-\d{2}$/.test(d.month)) { err.textContent = 'اختار الشهر.'; return; }
       const rec = {
         id: src?.id || uid('src'), kind: d.kind, name: d.name.trim() || INCOME_KINDS[d.kind].label,
-        amount, currency: d.currency, schedule: d.schedule, month: d.schedule === 'once' ? d.month : null,
+        amount, currency: d.currency, schedule: d.schedule, month: d.schedule === 'once' ? d.month : null, parts,
       };
       store.update((s) => upsert(s.incomeSources, rec));
       close();
@@ -376,6 +444,10 @@ export function openSourceForm(src = null) {
 
     render();
   });
+}
+
+function dayButtonInline(value, onChange) {
+  return dayButton({ value, onChange, title: 'يوم الوصول بالشهر' });
 }
 
 /* ---------- فئة ---------- */
@@ -536,16 +608,15 @@ export function openItemForm(item = null, kind = 'want') {
           iconPicker(ITEM_ICON_CHOICES, d.icon, (name) => { d.icon = name; render(); }, tintHex(d.kind === 'commitment' ? 'coral' : 'violet'))),
         h('div', { class: 'two' },
           field(d.kind === 'commitment' ? 'المبلغ' : 'السعر التقريبي', h('input', { type: 'text', inputmode: 'decimal', value: d.amount, placeholder: '0', oninput: (e) => { d.amount = e.target.value; } })),
-          field('العملة', h('select', { value: d.currency, onchange: (e) => { d.currency = e.target.value; } },
-            CODES.map((c) => h('option', { value: c }, CURRENCIES[c].name))))),
+          field('العملة', currencyPicker(d.currency, (v) => { d.currency = v; render(); }))),
         d.kind === 'want'
           ? h('div', { class: 'field' }, h('span', { class: 'field-label' }, 'الأولوية'),
             segmented(PRIORITY_OPTS, d.priority, (v) => { d.priority = v; render(); }, 'الأولوية'))
           : null,
         d.kind === 'want'
-          ? field('بدي ياه قبل (اختياري)', h('input', { type: 'month', value: d.month, onchange: (e) => { d.month = e.target.value; } }),
+          ? field('بدي ياه قبل (اختياري)', dateButton({ value: d.month, mode: 'month', placeholder: 'بلا موعد', allowEmpty: true, onChange: (v) => { d.month = v; render(); } }),
             'إذا ما في موعد خليه فاضي، وبينحط بأول شهر بيكفيه فيه الفائض.')
-          : field('بأي شهر لازم تدفعه؟', h('input', { type: 'month', value: d.month, onchange: (e) => { d.month = e.target.value; } }),
+          : field('بأي شهر لازم تدفعه؟', dateButton({ value: d.month, mode: 'month', onChange: (v) => { d.month = v; render(); } }),
             'الالتزام بينخصم من فائض شهره قبل أي غرض تاني.'),
         field('ملاحظة', h('input', { type: 'text', value: d.note, placeholder: 'اختياري', oninput: (e) => { d.note = e.target.value; } })),
         err,
@@ -657,7 +728,7 @@ export function openBoughtForm(item) {
             h('input', { type: 'text', inputmode: 'decimal', value: d.rate, oninput: (e) => { d.rate = e.target.value; refreshHint(); } }), hint)
           : null,
         h('div', { class: 'field' }, h('span', { class: 'field-label' }, 'الفئة'), chips),
-        field('التاريخ', h('input', { type: 'date', value: d.date, onchange: (e) => { d.date = e.target.value; } })),
+        field('التاريخ', dateButton({ value: d.date, onChange: (v) => { d.date = v; render(); } })),
         h('label', { class: 'check' },
           h('input', { type: 'checkbox', checked: d.record, onchange: (e) => { d.record = e.target.checked; } }),
           'سجّله كمصروف بالعمليات'),
@@ -728,7 +799,7 @@ export function openGoalForm(goal = null, preset = {}) {
         h('div', { class: 'two' },
           field('المبلغ المطلوب بالدولار', h('input', { type: 'text', inputmode: 'decimal', value: d.target, placeholder: '0', oninput: (e) => { d.target = e.target.value; refreshHint(); } })),
           field('جمعت لهلّق', h('input', { type: 'text', inputmode: 'decimal', value: d.saved, placeholder: '0', oninput: (e) => { d.saved = e.target.value; refreshHint(); } }))),
-        field('لإيمتى؟', h('input', { type: 'month', value: d.deadline, onchange: (e) => { d.deadline = e.target.value; refreshHint(); } })),
+        field('لإيمتى؟', dateButton({ value: d.deadline, mode: 'month', onChange: (v) => { d.deadline = v; render(); } })),
         hint,
         err,
         h('button', { class: 'btn block', type: 'button', onclick: save }, 'حفظ الهدف'),
@@ -807,9 +878,8 @@ export function openWhatIf() {
       field('شو بدك تشتري؟', h('input', { type: 'text', placeholder: 'مثلاً: موبايل جديد', oninput: (e) => { d.name = e.target.value; } })),
       h('div', { class: 'two' },
         field('المبلغ', h('input', { type: 'text', inputmode: 'decimal', placeholder: '0', 'data-autofocus': true, oninput: (e) => { d.amount = e.target.value; } })),
-        field('العملة', h('select', { value: d.currency, onchange: (e) => { d.currency = e.target.value; } },
-          CODES.map((c) => h('option', { value: c }, CURRENCIES[c].name))))),
-      field('بأي شهر؟', h('input', { type: 'month', value: d.month, onchange: (e) => { d.month = e.target.value; } })),
+        field('العملة', live((refresh) => currencyPicker(d.currency, (v) => { d.currency = v; refresh(); })))),
+      field('بأي شهر؟', live((refresh) => dateButton({ value: d.month, mode: 'month', onChange: (v) => { d.month = v; refresh(); } }))),
       h('button', { class: 'btn block', type: 'button', onclick: calc }, 'احسب'),
       result,
     ]);

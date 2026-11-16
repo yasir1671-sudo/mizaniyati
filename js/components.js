@@ -1,10 +1,11 @@
 // قطع مشتركة بين الصفحات
-import { h, icon } from './ui.js';
+import { h, icon, toast, haptic } from './ui.js';
 import { badge } from './icons.js';
 import { fmt } from './money.js';
-import { dayLabel } from './dates.js';
-import { catLabel, catIcon, catTint } from './store.js';
-import { openTxForm } from './forms.js';
+import { dayLabel, currentMonth, todayISO, daysText } from './dates.js';
+import { store, catLabel, catIcon, catTint } from './store.js';
+import { openTxForm, switchRow } from './forms.js';
+import { isCashAware, cashMonth, dailyAllowance } from './calc.js';
 import { openDebtForm, debtTxTitle } from './debts.js';
 
 export function group(title, children, { action = null, cls = '' } = {}) {
@@ -35,6 +36,48 @@ export function navRow({ iconName, tint, title, sub, end, onclick }) {
       sub ? h('span', { class: 'row-sub wrap' }, sub) : null),
     end ? h('span', { class: 'row-end' }, end) : null,
     h('span', { class: 'chev' }, icon('chevL', 18)));
+}
+
+/* ---------- مصاري الشهر الفعلية ---------- */
+function cashLine(label, value, { sub, cls = '', valueCls = '', end } = {}) {
+  return h('div', { class: `row ${cls}`.trim() },
+    h('span', { class: 'row-main' }, h('span', { class: 'row-title' }, label), sub ? h('span', { class: 'row-sub wrap' }, sub) : null),
+    end || null,
+    h('span', { class: 'row-end' }, h('span', { class: `amount ${valueCls}`.trim() }, value)));
+}
+
+export function cashCard(st, key, { compact = false } = {}) {
+  if (key !== currentMonth()) return null;
+  const on = isCashAware(st);
+  const toggle = switchRow('احسب على المصاري اللي معي فعلاً', 'مصروف اليوم ما بيطلع أكتر من اللي معك بالمحافظ والجاي هالشهر. مفيد إذا بلّشت بنص الشهر أو الراتب تأخر.',
+    on, (v) => store.update((s) => { s.settings.cashAware = v; }));
+  if (!on) return compact ? null : group('طريقة الحساب', [toggle]);
+  const today = todayISO();
+  const c = cashMonth(st, today);
+  const a = dailyAllowance(st, today);
+  if (compact && !a.cashLimited) return null;
+  const set = (fn, msg) => { const before = JSON.stringify(st.settings); store.update(fn); haptic('select'); toast(msg, { action: 'تراجع', onAction: () => store.update((s) => { s.settings = JSON.parse(before); }) }); };
+  const rows = [
+    cashLine('معك هلّق بالمحافظ', fmt(c.spendable), { sub: c.savingsHeld > 0.5 ? `وبمحافظ الادخار ${fmt(c.savingsHeld)} (ما بتنحسب)` : null }),
+    c.incomeComing > 0.5 ? cashLine('دخل لسّا جاي هالشهر', fmt(c.incomeComing, 'USD', { sign: true }), {
+      valueCls: 'income',
+      end: h('button', { class: 'btn secondary small', type: 'button', onclick: () => set((s) => { s.settings.settledMonths = { ...(s.settings.settledMonths || {}), [key]: true }; }, 'اعتبرنا دخل هالشهر وصل كله') }, 'وصل كله'),
+    }) : null,
+    c.debtIn > 0.5 ? cashLine('ديون راجعة إلك', fmt(c.debtIn, 'USD', { sign: true }), { valueCls: 'income' }) : null,
+    c.bills > 0.5 ? cashLine('فواتير ثابتة باقية', fmt(-c.bills)) : null,
+    c.commits + c.debtOut > 0.5 ? cashLine('التزامات وديون هالشهر', fmt(-(c.commits + c.debtOut))) : null,
+    c.savingsLeft > 0.5 ? cashLine('ادخار هالشهر', fmt(-c.savingsLeft), {
+      end: h('button', { class: 'btn secondary small', type: 'button', onclick: () => set((s) => { s.settings.monthSavings = { ...(s.settings.monthSavings || {}), [key]: 0 }; }, 'هالشهر بلا ادخار') }, 'بلا ادخار هالشهر'),
+    }) : null,
+    cashLine(c.pool >= 0 ? 'بيكفيك لآخر الشهر' : 'ناقصك لآخر الشهر', fmt(Math.abs(c.pool)), { cls: 'total', valueCls: c.pool < 0 ? 'over' : '' }),
+  ];
+  const extra = Math.max(0, c.pool - Math.max(0, a.perDay * a.daysLeft - a.todaySpent));
+  rows.push(h('p', { class: `row-note ${a.cashLimited ? 'warn-note' : ''}`.trim() }, a.cashLimited
+    ? `مصروف اليوم انحسب على المصاري اللي معك: ${fmt(a.perDay)} باليوم لـ ${daysText(a.daysLeft)}، لأنها أقل من الميزانية (${fmt(a.budgetPerDay)}).`
+    : `المصاري اللي معك بتكفي ميزانية باقي الشهر، وبيبقى ${fmt(extra)} للمشتريات أو الادخار.`));
+  if (c.missing.length) rows.push(h('p', { class: 'row-note bad' }, 'في محفظة ما إلها سعر صرف، فما انحسبت.'));
+  if (!compact) rows.push(toggle);
+  return group('مصاري الشهر الفعلية', rows);
 }
 
 export function emptyState(iconName, text, action) {

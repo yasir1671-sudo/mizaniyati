@@ -1,8 +1,8 @@
 // حفظ البيانات على الجهاز (localStorage) وإدارة الحالة
 import { iconKey, TINT_KEYS } from './icons.js';
 
-export const APP_VERSION = '2.0.0';
-export const DATA_VERSION = 2;
+export const APP_VERSION = '2.1.0';
+export const DATA_VERSION = 3;
 const KEY = 'mizaniyati:data';
 
 export function uid(prefix = 'id') {
@@ -11,27 +11,30 @@ export function uid(prefix = 'id') {
 
 // الكلمات (aliases) بتساعد الإدخال السريع يعرف الفئة: «50 أكل»
 const DEFAULT_CATEGORIES = [
-  { id: 'cat_food', type: 'expense', name: 'أكل ومطاعم', icon: 'food', tint: 'coral', aliases: ['أكل', 'طعام', 'غدا', 'غداء', 'عشا', 'عشاء', 'فطور', 'ترويقة', 'مطعم', 'مطاعم', 'شاورما', 'فلافل', 'بيتزا', 'سندويش', 'وجبة'] },
+  { id: 'cat_food', type: 'expense', name: 'أكل ومطاعم', icon: 'food', tint: 'coral', aliases: ['أكل', 'طعام', 'غدا', 'غداء', 'عشا', 'عشاء', 'فطور', 'ترويقة', 'مطعم', 'مطاعم', 'شاورما', 'فلافل', 'بيتزا', 'سندويش', 'سندويشة', 'سندويشات', 'فروج', 'كريب', 'برغر', 'طبخة', 'عزيمة', 'وجبة'] },
   { id: 'cat_snacks', type: 'expense', name: 'سناكات وقهوة', icon: 'coffee', tint: 'amber', aliases: ['سناك', 'سناكات', 'قهوة', 'شاي', 'حلو', 'حلويات', 'بسكوت', 'عصير', 'بوظة', 'شيبس', 'كولا', 'متة'] },
   { id: 'cat_grocery', type: 'expense', name: 'بقالة وخضرة', icon: 'cart', tint: 'mint', aliases: ['بقالة', 'خضرة', 'خضار', 'فواكه', 'سوبرماركت', 'ماركت', 'خبز', 'لحمة', 'جاج', 'دجاج', 'رز', 'زيت', 'سكر'] },
-  { id: 'cat_transport', type: 'expense', name: 'مواصلات', icon: 'car', tint: 'blue', aliases: ['مواصلات', 'تكسي', 'تاكسي', 'سرفيس', 'باص', 'بنزين', 'مازوت', 'أجرة', 'اوبر', 'مترو', 'سيارة'] },
+  { id: 'cat_transport', type: 'expense', name: 'مواصلات', icon: 'car', tint: 'blue', aliases: ['مواصلات', 'تكسي', 'تاكسي', 'سرفيس', 'باص', 'بنزين', 'مازوت', 'أجرة', 'اجار', 'ماتور', 'موتور', 'توصيلة', 'فان', 'ميكرو', 'اوبر', 'مترو', 'سيارة'] },
   { id: 'cat_bills', type: 'expense', name: 'فواتير واشتراكات', icon: 'receipt', tint: 'teal', fixed: true, aliases: ['فاتورة', 'فواتير', 'كهربا', 'كهرباء', 'مياه', 'نت', 'انترنت', 'رصيد', 'اشتراك', 'موبايل', 'باقة', 'غاز', 'امبير'] },
-  { id: 'cat_rent', type: 'expense', name: 'سكن وإيجار', icon: 'house', tint: 'violet', fixed: true, aliases: ['إيجار', 'اجار', 'آجار', 'سكن'] },
+  { id: 'cat_rent', type: 'expense', name: 'سكن وإيجار', icon: 'house', tint: 'violet', fixed: true, aliases: ['إيجار', 'ايجار', 'سكن', 'بيت'] },
   { id: 'cat_health', type: 'expense', name: 'صحة ودواء', icon: 'pill', tint: 'pink', aliases: ['دوا', 'دواء', 'صيدلية', 'دكتور', 'طبيب', 'مشفى', 'تحاليل', 'عيادة'] },
   { id: 'cat_clothes', type: 'expense', name: 'لبس', icon: 'shirt', tint: 'sage', aliases: ['لبس', 'تياب', 'ثياب', 'قميص', 'بنطلون', 'حذاء', 'صباط', 'جاكيت', 'كنزة'] },
   { id: 'cat_family', type: 'expense', name: 'عائلة وهدايا', icon: 'gift', tint: 'gold', aliases: ['هدية', 'هدايا', 'عائلة', 'أهل', 'عيدية'] },
   { id: 'cat_charity', type: 'expense', name: 'صدقة وزكاة', icon: 'heart', tint: 'mint', aliases: ['صدقة', 'زكاة', 'تبرع', 'كفالة'] },
+  { id: 'cat_debtpay', type: 'expense', name: 'سداد دين علي', icon: 'people', tint: 'violet', aliases: ['سددت', 'رجعت', 'رجّعت', 'وفيت'] },
   { id: 'cat_other', type: 'expense', name: 'أخرى', icon: 'box', tint: 'slate', aliases: [] },
   { id: 'inc_salary', type: 'income', name: 'راتب', icon: 'briefcase', tint: 'mint', aliases: ['راتب', 'معاش'] },
   { id: 'inc_stocks', type: 'income', name: 'أسهم وأرباح', icon: 'trend', tint: 'blue', aliases: ['أسهم', 'سهم', 'أرباح', 'توزيعات'] },
   { id: 'inc_extra', type: 'income', name: 'دخل إضافي', icon: 'toolbox', tint: 'amber', aliases: ['شغل', 'مشروع', 'إضافي', 'فريلانس'] },
-  { id: 'inc_debt', type: 'income', name: 'سداد دين إلي', icon: 'exchange', tint: 'violet', aliases: ['سداد', 'دين', 'رجعلي'] },
+  { id: 'inc_debt', type: 'income', name: 'سداد دين إلي', icon: 'people', tint: 'violet', aliases: ['سداد', 'دين', 'رجعلي', 'رجّعلي', 'ردلي'] },
   { id: 'inc_other', type: 'income', name: 'دخل آخر', icon: 'plusCircle', tint: 'slate', aliases: [] },
 ];
 const DEFAULTS_BY_ID = new Map(DEFAULT_CATEGORIES.map((c) => [c.id, c]));
 
 export const PROTECTED_CATEGORIES = ['cat_other', 'inc_other'];
 
+// التوزيع التلقائي بيترك 15% من المتاح فائض، مشان يضل في مجال للمشتريات المخططة
+export const AUTO_BUDGET_SHARE = 0.85;
 // توزيع تلقائي للميزانية (نسب من المبلغ المتاح للصرف)
 export const AUTO_BUDGET_WEIGHTS = {
   cat_food: 24, cat_grocery: 24, cat_transport: 10, cat_bills: 10, cat_snacks: 7,
@@ -43,8 +46,10 @@ export function defaultState() {
     version: DATA_VERSION,
     createdAt: new Date().toISOString(),
     settings: {
-      name: '', onboarded: false, hideAmounts: false,
+      name: '', onboarded: false, hideAmounts: false, pinHash: null,
       defaultAccountId: 'acc_usd', savingsTarget: 0, plannerStart: 0, lastBackupAt: null,
+      // settledMonths: دخل الشهر وصل كله. monthSavings: ادخار مختلف لشهر معيّن. dismissed: تذكيرات انزاحت
+      settledMonths: {}, monthSavings: {}, dismissed: {},
     },
     rates: {
       TRY: { rate: null, mode: 'auto', at: null },
@@ -62,6 +67,8 @@ export function defaultState() {
     // المخطِّط: أغراض بدك تشتريها (want) والتزامات لازم تندفع بشهر معيّن (commitment)
     planItems: [],
     goals: [],
+    // اشتراكات وفواتير بتتكرر كل شهر بيوم معيّن
+    recurring: [],
     // الديون: theyOwe = إلي عند حدا، iOwe = علي لحدا. الدفعات جوّا كل دين.
     debts: [],
     zakat: {
@@ -82,7 +89,7 @@ export function migrate(d) {
   const out = { ...base, ...d };
   out.settings = { ...base.settings, ...(d.settings || {}) };
   out.rates = { ...base.rates, ...(d.rates || {}) };
-  for (const k of ['accounts', 'categories', 'incomeSources', 'transactions', 'planItems', 'goals', 'debts']) {
+  for (const k of ['accounts', 'categories', 'incomeSources', 'transactions', 'planItems', 'goals', 'debts', 'recurring']) {
     if (!Array.isArray(out[k])) out[k] = base[k];
   }
   out.zakat = { ...base.zakat, ...(d.zakat || {}) };
@@ -103,6 +110,23 @@ export function migrate(d) {
   if (!d.settings || d.settings.onboarded === undefined) {
     out.settings.onboarded = out.transactions.length > 0 || out.incomeSources.length > 0;
   }
+  // من الإصدار 3: كلمات جديدة للإدخال بالصوت (أجار ماتور مواصلات مش إيجار)
+  if ((d.version || 1) < 3) {
+    for (const c of out.categories) {
+      const def = DEFAULTS_BY_ID.get(c.id);
+      if (!def) continue;
+      const set = new Set([...(c.aliases || []), ...def.aliases]);
+      if (c.id === 'cat_rent') { set.delete('اجار'); set.delete('آجار'); }
+      c.aliases = [...set];
+    }
+  }
+  // من الإصدار 3: فئة «سداد دين علي» (مرة وحدة، إذا انحذفت ما منرجّعها)
+  if ((d.version || 1) < 3 && !out.categories.some((c) => c.id === 'cat_debtpay')) {
+    const otherIdx = out.categories.findIndex((c) => c.id === 'cat_other');
+    const cat = { ...DEFAULTS_BY_ID.get('cat_debtpay'), budget: 0, fixed: false, private: false };
+    cat.aliases = [...cat.aliases];
+    if (otherIdx >= 0) out.categories.splice(otherIdx, 0, cat); else out.categories.push(cat);
+  }
   out.version = DATA_VERSION;
   return out;
 }
@@ -122,7 +146,9 @@ let state = initial.data;
 const subs = new Set();
 let persistAsked = false;
 
+let version = 0;
 function save() {
+  version += 1;
   try {
     localStorage.setItem(KEY, JSON.stringify(state));
   } catch (e) {
@@ -140,6 +166,8 @@ save();
 
 export const store = {
   get state() { return state; },
+  // بيزيد مع كل تغيير (للحسابات المحفوظة)
+  get version() { return version; },
   subscribe(fn) { subs.add(fn); return () => subs.delete(fn); },
   update(mutator, { silent = false } = {}) {
     const r = mutator(state);
@@ -152,7 +180,7 @@ export const store = {
 };
 
 window.addEventListener('storage', (e) => {
-  if (e.key === KEY) { state = load().data; emit(); }
+  if (e.key === KEY) { state = load().data; version += 1; emit(); }
 });
 
 export function backupPayload() {
