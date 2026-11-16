@@ -1,64 +1,130 @@
-// تشغيل التطبيق: الأقسام، الثيم، التحديث، وعامل الخدمة (offline)
+// تشغيل التطبيق: التنقّل بين الصفحات، الشريط السفلي، التحديث، والشغل بدون نت
 import { store } from './store.js';
-import { h, icon, toast } from './ui.js';
-import { renderHome } from './views/home.js';
-import { renderTransactions } from './views/transactions.js';
-import { renderPlan } from './views/plan.js';
-import { renderWallets } from './views/wallets.js';
-import { renderMore } from './views/more.js';
+import { h, icon, toast, haptic } from './ui.js';
+import { setHideAmounts } from './money.js';
 import { refreshRates } from './rates.js';
+import { renderHome } from './views/home.js';
+import { renderActivity } from './views/activity.js';
+import { renderReportsPage } from './views/reports.js';
+import { renderPlanHub, renderPlanMonth, renderPlanYear, renderPlanItems, renderPlanGoals, planActions } from './views/plan.js';
+import { renderMoneyHub, renderDebts, renderZakat, moneyActions } from './views/money.js';
+import { renderSettings, renderCategories, categoriesActions } from './views/settings.js';
+import { openAddSheet } from './keypad.js';
+import { openOnboarding } from './onboarding.js';
+
+/* كل صفحة: لأي تبويب بتنتمي، ومين أبوها (للصفحات الفرعية اللي إلها زر رجوع) */
+const ROUTES = {
+  home: { tab: 'home', render: renderHome },
+  activity: { tab: 'activity', render: renderActivity },
+  'activity/reports': { tab: 'activity', parent: 'activity', title: 'تحليل المصاريف', render: renderReportsPage },
+  plan: { tab: 'plan', render: renderPlanHub },
+  'plan/month': { tab: 'plan', parent: 'plan', title: 'ميزانية الشهر', render: renderPlanMonth },
+  'plan/year': { tab: 'plan', parent: 'plan', title: 'السنة الجاية', render: renderPlanYear, actions: planActions.year },
+  'plan/items': { tab: 'plan', parent: 'plan', title: 'المشتريات والالتزامات', render: renderPlanItems, actions: planActions.items },
+  'plan/goals': { tab: 'plan', parent: 'plan', title: 'الأهداف والادخار', render: renderPlanGoals, actions: planActions.goals },
+  money: { tab: 'money', render: renderMoneyHub },
+  'money/debts': { tab: 'money', parent: 'money', title: 'الديون', render: renderDebts, actions: moneyActions.debts },
+  'money/zakat': { tab: 'money', parent: 'money', title: 'الزكاة', render: renderZakat },
+  settings: { tab: 'home', parent: 'home', title: 'الإعدادات', render: renderSettings },
+  'settings/categories': { tab: 'home', parent: 'settings', title: 'الفئات', render: renderCategories, actions: categoriesActions },
+};
 
 const TABS = [
-  { id: 'home', label: 'الرئيسية', icon: 'home', render: renderHome },
-  { id: 'tx', label: 'العمليات', icon: 'list', render: renderTransactions },
-  { id: 'plan', label: 'الخطة', icon: 'plan', render: renderPlan },
-  { id: 'wallets', label: 'المال', icon: 'wallet', render: renderWallets },
-  { id: 'more', label: 'المزيد', icon: 'more', render: renderMore },
+  { id: 'home', label: 'الرئيسية', icon: 'home' },
+  { id: 'activity', label: 'السجل', icon: 'list' },
+  { id: 'add' },
+  { id: 'plan', label: 'الخطة', icon: 'plan' },
+  { id: 'money', label: 'المال', icon: 'wallet' },
 ];
 
 const viewEl = document.getElementById('view');
 const tabsEl = document.getElementById('tabs');
-const themeMeta = document.getElementById('theme-color');
+const scrollMemory = new Map();
+let routeStack = [];
 let current = 'home';
 let lastDay = new Date().toDateString();
 
-function go(id) {
-  if (!TABS.some((t) => t.id === id)) return;
-  current = id;
-  render(true);
+const parsePath = () => {
+  const p = decodeURIComponent(location.hash.replace(/^#\/?/, ''));
+  return ROUTES[p] ? p : 'home';
+};
+
+// تبويب: منبدّل بدون ما نكبّر السجل. صفحة فرعية: منضيفها للسجل مشان زر الرجوع
+function go(path) {
+  if (!ROUTES[path]) return;
+  routeStack = [path];
+  if (parsePath() === path && location.hash) { navigateTo(path, 'tab-in'); return; }
+  location.replace(`#/${path}`);
+}
+function open(path) {
+  if (!ROUTES[path]) return;
+  location.hash = `#/${path}`;
+}
+function back() {
+  const parent = ROUTES[current]?.parent || 'home';
+  if (routeStack.length > 1) history.back();
+  else { routeStack = [parent]; location.replace(`#/${parent}`); }
+}
+const ctx = { go, open, back };
+
+window.addEventListener('hashchange', () => {
+  const path = parsePath();
+  let dir = 'tab-in';
+  if (routeStack.length > 1 && routeStack[routeStack.length - 2] === path) { routeStack.pop(); dir = 'back'; }
+  else if (routeStack[routeStack.length - 1] !== path) {
+    if (ROUTES[path].parent) { routeStack.push(path); dir = 'fwd'; } else routeStack = [path];
+  }
+  navigateTo(path, dir);
+});
+
+function navigateTo(path, dir) {
+  scrollMemory.set(current, window.scrollY);
+  current = path;
+  render({ dir, scroll: dir === 'back' ? (scrollMemory.get(path) || 0) : 0 });
 }
 
-function render(toTop = false) {
+function render({ dir = null, scroll = null } = {}) {
   const y = window.scrollY;
-  applyTheme();
-  const tab = TABS.find((t) => t.id === current);
+  setHideAmounts(store.state.settings.hideAmounts);
+  const route = ROUTES[current];
+  let page;
   try {
-    viewEl.replaceChildren(tab.render({ go }));
+    const content = route.render(ctx);
+    if (route.parent) {
+      page = h('div', { class: 'page' },
+        h('header', { class: 'subhead' },
+          h('button', { class: 'icon-btn', type: 'button', 'aria-label': 'رجوع', onclick: () => { haptic('tap'); back(); } }, icon('chevR', 22)),
+          h('h1', null, route.title),
+          route.actions ? route.actions(ctx) : null),
+        content);
+    } else {
+      page = h('div', { class: 'page' }, content);
+    }
   } catch (err) {
     console.error(err);
-    viewEl.replaceChildren(h('div', { class: 'empty' },
+    page = h('div', { class: 'page' }, h('div', { class: 'empty' },
       h('p', null, 'صار خطأ بعرض هالصفحة.'),
       h('p', { class: 'muted' }, String(err?.message || err))));
   }
-  for (const b of tabsEl.children) {
-    if (b.dataset.id === current) b.setAttribute('aria-current', 'page');
+  if (dir) page.classList.add(dir);
+  viewEl.replaceChildren(page);
+  for (const b of tabsEl.querySelectorAll('.tab')) {
+    if (b.dataset.id === route.tab) b.setAttribute('aria-current', 'page');
     else b.removeAttribute('aria-current');
   }
-  window.scrollTo(0, toTop ? 0 : y);
+  window.scrollTo(0, scroll ?? y);
 }
 
 function buildTabs() {
-  tabsEl.replaceChildren(...TABS.map((t) => h('button', { class: 'tab', type: 'button', 'data-id': t.id, onclick: () => go(t.id) },
-    icon(t.icon, 24), h('span', null, t.label))));
-}
-
-function applyTheme() {
-  const t = store.state.settings.theme;
-  const root = document.documentElement;
-  if (t === 'light' || t === 'dark') root.dataset.theme = t;
-  else delete root.dataset.theme;
-  const paper = getComputedStyle(root).getPropertyValue('--paper').trim();
-  if (paper && themeMeta) themeMeta.setAttribute('content', paper);
+  tabsEl.replaceChildren(...TABS.map((t) => {
+    if (t.id === 'add') {
+      return h('button', { class: 'fab', type: 'button', 'aria-label': 'إضافة عملية', onclick: () => { haptic('select'); openAddSheet(); } }, icon('plus', 28, { stroke: 2.4 }));
+    }
+    return h('button', {
+      class: 'tab', type: 'button', 'data-id': t.id,
+      onclick: () => { haptic('tap'); if (ROUTES[current].tab === t.id && current === t.id) window.scrollTo({ top: 0, behavior: 'smooth' }); else go(t.id); },
+    }, icon(t.icon, 24), h('span', null, t.label));
+  }));
 }
 
 function registerSW() {
@@ -87,16 +153,15 @@ function registerSW() {
 }
 
 store.subscribe(() => render());
-window.matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', applyTheme);
-window.addEventListener('store-error', () => toast('ما انحفظت البيانات. ممكن ذاكرة المتصفح ممتلئة.'));
+window.addEventListener('store-error', () => toast('ما انحفظت البيانات. ممكن ذاكرة المتصفح ممتلئة.', { kind: 'warn' }));
 window.addEventListener('beforeinstallprompt', (e) => {
   e.preventDefault();
   window.__installPrompt = e;
-  if (current === 'more') render();
+  if (current === 'settings') render();
 });
 window.addEventListener('appinstalled', () => {
   window.__installPrompt = null;
-  if (current === 'more') render();
+  if (current === 'settings') render();
 });
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState !== 'visible') return;
@@ -106,7 +171,9 @@ document.addEventListener('visibilitychange', () => {
 });
 
 buildTabs();
-render(true);
-// منأخّر جلب الأسعار شوي مشان ما يقطع حركة النقشة بأول فتحة
+current = parsePath();
+routeStack = ROUTES[current].parent ? [ROUTES[current].parent, current] : [current];
+render({ dir: 'tab-in', scroll: 0 });
 setTimeout(() => refreshRates().catch(() => {}), 1500);
+if (!store.state.settings.onboarded) setTimeout(() => openOnboarding(), 400);
 registerSW();

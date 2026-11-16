@@ -1,97 +1,132 @@
-// الرئيسية: مصروف اليوم، الإدخال السريع، ملخص الشهر
-import { h, toast } from '../ui.js';
-import { store, uid } from '../store.js';
-import { CURRENCIES, fmt, rateOf } from '../money.js';
-import { todayISO, longDate, monthLabel, daysText } from '../dates.js';
-import { dailyAllowance, plan, monthStats, netWorth, sortTx } from '../calc.js';
+// الرئيسية: مصروف اليوم، الإدخال السريع، المستحقات، الاختصارات، ملخص الشهر
+import { h, icon, toast, haptic } from '../ui.js';
+import { badge } from '../icons.js';
+import { store, uid, catLabel, catIcon, catTint } from '../store.js';
+import { CURRENCIES, fmt, rateOf, toUSD } from '../money.js';
+import { todayISO, monthLabel, daysText, daysUntil, longDate } from '../dates.js';
+import { dailyAllowance, plan, monthStats, netWorth, sortTx, debtRemaining } from '../calc.js';
 import { parseQuick } from '../parse.js';
-import { rosette } from '../rosette.js';
-import { openTxForm, openRateForm } from '../forms.js';
-import { group, statRow, txRow, bar } from '../components.js';
+import { openRateForm, INCOME_KINDS } from '../forms.js';
+import { openAddSheet } from '../keypad.js';
+import { group, txRow, bar } from '../components.js';
 import { buildPlan } from '../planner.js';
-import { setPlanSection } from './plan.js';
-import { setWalletSection } from './wallets.js';
 import { computeZakat, zakatDueDate } from '../zakat.js';
-import { daysUntil } from '../dates.js';
+import { openOnboarding } from '../onboarding.js';
 
 let introPlayed = false;
 
-export function renderHome({ go }) {
+export function renderHome({ open }) {
   const st = store.state;
   const today = todayISO();
   const key = today.slice(0, 7);
   const a = dailyAllowance(st, today);
   const p = plan(st, key);
   const ms = monthStats(st, key);
-  const nw = netWorth(st);
+  const P = buildPlan(st);
 
-  return h('div', { class: 'page' },
-    h('header', { class: 'page-head' }, h('h1', null, longDate(today))),
-    hero(a, go),
-    allowanceNote(a, go),
+  return [
+    greeting(st, open),
+    hero(a),
     quickAdd(),
+    frequentChips(st),
+    dueCard(st, key),
     rateBanners(st),
-    zakatBanner(st, go),
-    backupBanner(st, go),
-    group(monthLabel(key, { year: false }), [
-      statRow('الدخل اللي وصل', fmt(ms.income), p.income > 0 ? `من ${fmt(p.income)} متوقع` : null, 'income'),
-      statRow('المصروف', fmt(ms.expense), p.total > 0 ? `من ميزانية ${fmt(p.total)}` : null),
-      statRow('الادخار المخطط', fmt(p.savings), null),
-      h('button', { class: 'row', type: 'button', onclick: () => go('wallets') },
-        h('span', { class: 'row-main' },
-          h('span', { class: 'row-title' }, 'مجموع اللي معك'),
-          nw.missing.length > 0 ? h('span', { class: 'row-sub' }, 'في عملة ما إلها سعر صرف') : null),
-        h('span', { class: 'row-end' }, h('span', { class: 'amount' }, fmt(nw.usd)))),
-    ]),
-    upcomingGroup(st, key, go),
-    categoriesGroup(st, ms),
-    recentGroup(st, go));
+    zakatBanner(st, open),
+    backupBanner(st, open),
+    tiles(st, P, open),
+    monthCard(ms, p, key, open),
+    budgetsCard(st, ms, open),
+    upcomingCard(st, P, key, open),
+    recentCard(st, open),
+  ];
 }
 
-function hero(a, go) {
+/* ---------- الترحيب ---------- */
+function greeting(st, open) {
+  const hr = new Date().getHours();
+  const hello = hr >= 4 && hr < 12 ? 'صباح الخير' : 'مسا الخير';
+  const name = (st.settings.name || '').trim();
+  const hidden = st.settings.hideAmounts;
+  return h('header', { class: 'greet' },
+    h('div', null,
+      h('small', null, longDate(todayISO())),
+      h('strong', null, name ? `${hello} يا ${name}` : hello)),
+    h('div', { class: 'head-actions' },
+      h('button', {
+        class: 'icon-btn', type: 'button', 'aria-label': hidden ? 'أظهر المبالغ' : 'خبّي المبالغ', 'aria-pressed': String(hidden),
+        onclick: () => { haptic('select'); store.update((s) => { s.settings.hideAmounts = !s.settings.hideAmounts; }); },
+      }, icon(hidden ? 'eyeOff' : 'eye', 20)),
+      h('button', { class: 'icon-btn', type: 'button', 'aria-label': 'الإعدادات', onclick: () => open('settings') }, icon('sliders', 20))));
+}
+
+/* ---------- حلقة مصروف اليوم ---------- */
+function ring(fraction, over, animate) {
+  const NS = 'http://www.w3.org/2000/svg';
+  const r = 64;
+  const C = 2 * Math.PI * r;
+  const id = `rg${Math.random().toString(36).slice(2, 7)}`;
+  const svg = document.createElementNS(NS, 'svg');
+  svg.setAttribute('viewBox', '0 0 150 150');
+  svg.setAttribute('aria-hidden', 'true');
+  svg.innerHTML = `
+    <defs><linearGradient id="${id}" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="${over ? '#FF8A7A' : '#4AD6A0'}"/><stop offset="1" stop-color="${over ? '#E0485A' : '#1C98A6'}"/>
+    </linearGradient></defs>
+    <circle class="ring-track" cx="75" cy="75" r="${r}" fill="none" stroke-width="12"/>
+    <circle class="ring-fill" cx="75" cy="75" r="${r}" fill="none" stroke="url(#${id})" stroke-width="12" stroke-linecap="round"
+      stroke-dasharray="${C}" stroke-dashoffset="${animate ? C : C * (1 - fraction)}"/>`;
+  if (animate) {
+    const fill = svg.querySelector('.ring-fill');
+    requestAnimationFrame(() => requestAnimationFrame(() => fill.setAttribute('stroke-dashoffset', String(C * (1 - fraction)))));
+  }
+  return svg;
+}
+
+function hero(a) {
   if (a.source === 'none') {
-    return h('section', { class: 'hero', 'aria-label': 'مصروف اليوم' },
-      rosette(0),
-      h('div', { class: 'hero-text' },
-        h('p', { class: 'hero-label' }, 'لسّا ما في خطة للشهر'),
-        h('p', { class: 'hero-sub' }, 'حط دخلك وميزانيتك، وهون رح يطلع لك قدّيش فيك تصرف كل يوم.'),
-        h('button', { class: 'btn small', type: 'button', onclick: () => go('plan') }, 'حدد دخلك وميزانيتك')));
+    return h('section', { class: 'hero-card' },
+      h('div', { class: 'hero-empty' },
+        badge('sparkle', 'mint', 56),
+        h('h2', null, 'خلّينا نجهّز خطتك'),
+        h('p', null, 'دقيقة وحدة: دخلك، وقدّيش بدك تدّخر، وبنوزّع لك الميزانية. بعدها بيطلع لك هون قدّيش فيك تصرف كل يوم.'),
+        h('button', { class: 'btn', type: 'button', onclick: () => openOnboarding() }, icon('sparkle', 18), 'يلا نبلّش')));
   }
   const over = a.left < 0;
   const fraction = a.perDay > 0 ? Math.max(0, Math.min(1, a.left / a.perDay)) : 0;
   const value = fmt(Math.abs(a.left));
   const animate = !introPlayed;
   introPlayed = true;
-  return h('section', { class: `hero${over ? ' over' : ''}`, 'aria-label': 'مصروف اليوم' },
-    rosette(fraction, { animate }),
-    h('div', { class: 'hero-text' },
-      h('p', { class: 'hero-label' }, over ? 'تجاوزت مصروف اليوم بـ' : 'باقي لك تصرف اليوم'),
-      h('p', { class: `hero-value${value.length > 9 ? ' long' : ''}` }, value),
-      h('p', { class: 'hero-sub' }, `من أصل ${fmt(a.perDay)} لليوم`)));
+  const stat = (name, tint, label, val) => h('div', { class: 'hero-stat' }, badge(name, tint, 34), h('div', null, h('small', null, label), h('b', null, val)));
+  return h('section', { class: `hero-card${over ? ' over' : ''}`, 'aria-label': 'مصروف اليوم' },
+    h('div', { class: 'ring-wrap' },
+      ring(fraction, over, animate),
+      h('div', { class: 'ring-center' },
+        h('small', null, over ? 'تجاوزت اليوم' : 'باقي لك اليوم'),
+        h('strong', { class: value.length > 9 ? 'long' : '' }, value),
+        h('span', null, `من ${fmt(a.perDay)}`))),
+    h('div', { class: 'hero-stats' },
+      stat('arrowDown', 'coral', 'صرفت اليوم', fmt(a.todaySpent)),
+      stat('calendar', a.monthLeft < 0 ? 'coral' : 'teal', a.monthLeft < 0 ? 'تجاوزت الشهر' : 'باقي للشهر', fmt(Math.abs(a.monthLeft))),
+      stat('flag', 'gold', 'ضل بالشهر', daysText(a.daysLeft))));
 }
 
-function allowanceNote(a, go) {
-  if (a.source === 'none') return null;
-  if (a.monthLeft < 0) return h('p', { class: 'hero-note bad' }, `تجاوزت ميزانية الشهر بـ ${fmt(-a.monthLeft)}.`);
-  return h('p', { class: 'hero-note' },
-    `باقي من ميزانية الشهر ${fmt(a.monthLeft)} لـ ${daysText(a.daysLeft)}.`,
-    a.source === 'income' ? h('button', { class: 'link-btn', type: 'button', onclick: () => go('plan') }, 'حدد ميزانية الفئات') : null);
-}
-
+/* ---------- الإدخال السريع ---------- */
 function quickAdd() {
   const input = h('input', {
-    type: 'text', class: 'quick-input', placeholder: 'اكتب مصروفك: 50 أكل',
+    type: 'text', class: 'quick-input', placeholder: 'اكتب أو احكي: 50 أكل',
     enterkeyhint: 'send', autocomplete: 'off', 'aria-label': 'إدخال سريع للمصروف',
   });
-  const form = h('form', { class: 'quick', onsubmit: (e) => { e.preventDefault(); submitQuick(input); } },
-    input,
-    h('button', { class: 'btn violet', type: 'submit' }, 'أضف'));
   return h('section', { class: 'quick-wrap' },
-    form,
-    h('div', { class: 'quick-more' },
-      h('button', { class: 'link-btn', type: 'button', onclick: () => openTxForm({ type: 'expense' }) }, 'مصروف بالتفصيل'),
-      h('button', { class: 'link-btn', type: 'button', onclick: () => openTxForm({ type: 'income' }) }, 'تسجيل دخل'),
-      h('button', { class: 'link-btn', type: 'button', onclick: () => openTxForm({ type: 'transfer' }) }, 'تحويل أو تصريف')));
+    h('form', { class: 'quick', onsubmit: (e) => { e.preventDefault(); submitQuick(input); } },
+      h('span', { class: 'mic' }, icon('mic', 20)),
+      input,
+      h('button', { class: 'send', type: 'submit', 'aria-label': 'أضف' }, icon('send', 20))));
+}
+
+function addTx(tx, label) {
+  store.update((s) => { s.transactions.push(tx); });
+  haptic('success');
+  toast(label, { action: 'تراجع', onAction: () => store.update((s) => { s.transactions = s.transactions.filter((t) => t.id !== tx.id); }) });
 }
 
 function submitQuick(input) {
@@ -99,77 +134,103 @@ function submitQuick(input) {
   const r = parseQuick(input.value, st);
   if (!r.ok) {
     if (r.reason === 'empty') { input.focus(); return; }
-    if (r.reason === 'no-account') { toast(`ما عندك محفظة بـ ${CURRENCIES[r.currency].name}. ضيفها من المحافظ.`); return; }
-    openTxForm({ prefill: { note: r.note } });
-    toast('ما لقيت مبلغ. كمّل التفاصيل هون.');
+    if (r.reason === 'no-account') { toast(`ما عندك محفظة بـ ${CURRENCIES[r.currency].name}. ضيفها من المال.`, { kind: 'warn' }); return; }
+    openAddSheet({ note: r.note });
     return;
   }
   const rate = rateOf(st, r.currency);
   if (!rate) {
-    openTxForm({ type: r.type, prefill: { amount: r.amount, accountId: r.accountId, categoryId: r.categoryId, note: r.note } });
-    toast('حط سعر الصرف وكمّل.');
+    openAddSheet({ type: r.type, amount: r.amount, accountId: r.accountId, categoryId: r.categoryId, note: r.note });
     return;
   }
-  const tx = {
+  const c = st.categories.find((x) => x.id === r.categoryId);
+  addTx({
     id: uid('tx'), type: r.type, date: todayISO(), accountId: r.accountId, amount: r.amount,
     categoryId: r.categoryId, note: r.note, usd: r.amount / rate, createdAt: Date.now(),
-  };
-  store.update((s) => { s.transactions.push(tx); });
-  const cat = st.categories.find((c) => c.id === tx.categoryId);
-  toast(`انضاف ${fmt(tx.amount, r.currency)} على ${cat?.name ?? 'أخرى'}`, {
-    action: 'تراجع',
-    onAction: () => store.update((s) => { s.transactions = s.transactions.filter((t) => t.id !== tx.id); }),
-  });
+  }, `انضاف ${fmt(r.amount, r.currency)} على ${catLabel(c)}`);
+}
+
+// أكتر شي بتسجّله: كبسة وحدة بتضيفه
+function frequentChips(st) {
+  const since = Date.now() - 75 * 86400000;
+  const counts = new Map();
+  for (const t of st.transactions) {
+    if (t.type !== 'expense' || t.planItemId || t.noDaily || (t.createdAt || 0) < since) continue;
+    const k = `${t.categoryId}|${t.amount}|${t.accountId}|${t.note || ''}`;
+    const e = counts.get(k) || { t, n: 0 };
+    e.n += 1;
+    counts.set(k, e);
+  }
+  const top = [...counts.values()].filter((e) => e.n >= 2).sort((a, b) => b.n - a.n).slice(0, 5);
+  if (!top.length) return null;
+  return h('div', { class: 'freq', role: 'list', 'aria-label': 'تكرار سريع' }, top.map(({ t }) => {
+    const c = st.categories.find((x) => x.id === t.categoryId);
+    const acc = st.accounts.find((x) => x.id === t.accountId);
+    const label = c?.private ? catLabel(c) : (t.note || catLabel(c));
+    return h('button', {
+      type: 'button', role: 'listitem',
+      onclick: () => {
+        const rate = rateOf(store.state, acc?.currency || 'USD');
+        if (!rate) { openAddSheet({ amount: t.amount, accountId: t.accountId, categoryId: t.categoryId, note: t.note }); return; }
+        addTx({ ...t, id: uid('tx'), date: todayISO(), usd: t.amount / rate, createdAt: Date.now() }, `انضاف ${fmt(t.amount, acc?.currency)} ${label}`);
+      },
+    }, badge(catIcon(c), catTint(c), 24), label, h('b', null, fmt(t.amount, acc?.currency || 'USD')));
+  }));
+}
+
+/* ---------- مستحقات الشهر: دخل متوقع ما انسجل، وفواتير ثابتة ما اندفعت ---------- */
+const SOURCE_CATEGORY = { salary: 'inc_salary', stocks: 'inc_stocks', extra: 'inc_extra', other: 'inc_other' };
+
+function dueCard(st, key) {
+  const monthTxs = st.transactions.filter((t) => t.date.startsWith(key));
+  const rows = [];
+  for (const s of st.incomeSources) {
+    if (s.kind === 'debt' || (s.schedule === 'once' && s.month !== key)) continue;
+    if (monthTxs.some((t) => t.sourceId === s.id)) continue;
+    const k = INCOME_KINDS[s.kind] || INCOME_KINDS.other;
+    const acc = st.accounts.find((x) => x.id === st.settings.defaultAccountId && x.currency === s.currency) || st.accounts.find((x) => x.currency === s.currency);
+    rows.push(h('div', { class: 'row' },
+      badge(k.icon, 'mint', 40),
+      h('span', { class: 'row-main' },
+        h('span', { class: 'row-title' }, `وصل «${s.name}»؟`),
+        h('span', { class: 'row-sub' }, `متوقع ${fmt(s.amount, s.currency)}`)),
+      h('button', {
+        class: 'btn small', type: 'button',
+        onclick: () => openAddSheet({ type: 'income', amount: s.amount, accountId: acc?.id, categoryId: SOURCE_CATEGORY[s.kind] || 'inc_other', note: s.name, sourceId: s.id }),
+      }, 'سجّله')));
+  }
+  for (const c of st.categories) {
+    if (c.type !== 'expense' || !c.fixed || !(c.budget > 0)) continue;
+    if (monthTxs.some((t) => t.type === 'expense' && t.categoryId === c.id)) continue;
+    rows.push(h('div', { class: 'row' },
+      badge(catIcon(c), catTint(c), 40),
+      h('span', { class: 'row-main' },
+        h('span', { class: 'row-title' }, `دفعت ${catLabel(c)}؟`),
+        h('span', { class: 'row-sub' }, `بالميزانية ${fmt(c.budget)}`)),
+      h('button', {
+        class: 'btn secondary small', type: 'button',
+        onclick: () => openAddSheet({ type: 'expense', amount: c.budget, accountId: 'acc_usd', categoryId: c.id }),
+      }, 'سجّل')));
+  }
+  if (!rows.length) return null;
+  return group('مستحقات هالشهر', rows.slice(0, 4));
+}
+
+/* ---------- تنبيهات ---------- */
+function bannerEl(iconName, text, btnLabel, onclick, cls = '') {
+  return h('div', { class: `banner ${cls}`.trim() },
+    h('span', { class: 'banner-ic' }, icon(iconName, 22)),
+    h('p', null, text),
+    btnLabel ? h('button', { class: 'btn small', type: 'button', onclick }, btnLabel) : null);
 }
 
 function rateBanners(st) {
   const needed = new Set(st.accounts.map((a) => a.currency));
   needed.delete('USD');
-  return [...needed].filter((c) => !rateOf(st, c)).map((c) => h('div', { class: 'banner' },
-    h('p', null, `حدد سعر ${CURRENCIES[c].name} مشان تنحسب مصاريفها بالدولار.`),
-    h('button', { class: 'btn small', type: 'button', onclick: () => openRateForm(c) }, 'حدد السعر')));
+  return [...needed].filter((c) => !rateOf(st, c)).map((c) => bannerEl('info', `حدد سعر ${CURRENCIES[c].name} مشان تنحسب مصاريفها بالدولار.`, 'حدد السعر', () => openRateForm(c)));
 }
 
-function backupBanner(st, go) {
-  if (st.transactions.length < 10) return null;
-  const last = st.settings.lastBackupAt || 0;
-  if (Date.now() - last < 14 * 24 * 3600 * 1000) return null;
-  return h('div', { class: 'banner' },
-    h('p', null, last ? 'صار لك أكتر من أسبوعين ما حفظت نسخة احتياطية.' : 'بياناتك على هالموبايل بس. احفظ نسخة احتياطية.'),
-    h('button', { class: 'btn small', type: 'button', onclick: () => go('more') }, 'احفظ نسخة'));
-}
-
-// أقرب التزامات ومشتريات من الخطة (هالشهر والشهرين الجايين)
-function upcomingGroup(st, key, go) {
-  const hasItems = st.planItems.some((i) => i.status !== 'bought');
-  const hasDebts = st.debts.some((d) => d.due);
-  if (!hasItems && !hasDebts) return null;
-  const P = buildPlan(st);
-  const entries = P.rows.slice(0, 3).flatMap((r) => r.entries
-    .filter((e) => e.kind !== 'bought' && e.kind !== 'debtDone')
-    .map((e) => ({ ...e, month: r.month })));
-  if (!entries.length) return null;
-  const openItems = () => { setPlanSection('items'); go('plan'); };
-  const openDebts = () => { setWalletSection('debts'); go('wallets'); };
-  const when = (e, word) => (e.month === key ? `${word} هالشهر` : `${word} بـ ${monthLabel(e.month, { year: false })}`);
-  return group('جاية قريباً', entries.slice(0, 4).map((e) => {
-    let sub;
-    if (e.kind === 'commitment') sub = e.it.month < key ? 'التزام فات موعده' : when(e, 'التزام');
-    else if (e.kind === 'debtIn') sub = when(e, 'دين راجع إلك');
-    else if (e.kind === 'debtOut') sub = when(e, 'دين لازم تسدّه');
-    else sub = e.month === key ? 'فيك تشتريه هالشهر' : `مخطط بـ ${monthLabel(e.month, { year: false })}`;
-    const isDebt = e.kind === 'debtIn' || e.kind === 'debtOut';
-    return h('button', { class: 'row', type: 'button', onclick: isDebt ? openDebts : openItems },
-      h('span', { class: 'tx-icon', 'aria-hidden': 'true' }, e.it.icon || '🛍️'),
-      h('span', { class: 'row-main' },
-        h('span', { class: 'row-title' }, e.it.name),
-        h('span', { class: 'row-sub' }, sub)),
-      h('span', { class: 'row-end' }, h('span', { class: `amount ${e.kind === 'debtIn' ? 'income' : ''}`.trim() }, fmt(e.usd, 'USD', { sign: e.kind === 'debtIn' }))));
-  }), { action: hasItems ? h('button', { class: 'link-btn', type: 'button', onclick: openItems }, 'كل المشتريات') : null });
-}
-
-// تذكير الزكاة قبل الحول بشهر، أو إذا صارت مستحقة
-function zakatBanner(st, go) {
+function zakatBanner(st, open) {
   const due = zakatDueDate(st);
   if (!due) return null;
   const left = daysUntil(due);
@@ -180,39 +241,121 @@ function zakatBanner(st, go) {
   if (left > 0) when = `بعد ${daysText(left)}`;
   else if (left === 0) when = 'اليوم';
   else when = `من ${daysText(-left)}`;
-  return h('div', { class: 'banner' },
-    h('p', null, `زكاتك مستحقة ${when}: ${fmt(Z.due)}.`),
-    h('button', { class: 'btn small', type: 'button', onclick: () => { setWalletSection('zakat'); go('wallets'); } }, 'التفاصيل'));
+  return bannerEl('moon', `زكاتك مستحقة ${when}: ${fmt(Z.due)}.`, 'التفاصيل', () => open('money/zakat'), 'gold-banner');
 }
 
-function categoriesGroup(st, ms) {
+function backupBanner(st, open) {
+  if (st.transactions.length < 10) return null;
+  const last = st.settings.lastBackupAt || 0;
+  if (Date.now() - last < 14 * 86400000) return null;
+  return bannerEl('shield', last ? 'صار لك أكتر من أسبوعين ما حفظت نسخة احتياطية.' : 'بياناتك على هالموبايل بس. احفظ نسخة احتياطية.', 'احفظ', () => open('settings'), 'warn-banner');
+}
+
+/* ---------- اختصارات لكل الميزات ---------- */
+function tiles(st, P, open) {
+  const planned = st.planItems.filter((i) => i.status !== 'bought');
+  let theyOwe = 0;
+  let iOwe = 0;
+  for (const d of st.debts) {
+    const u = toUSD(st, debtRemaining(d), d.currency);
+    if (!Number.isFinite(u)) continue;
+    if (d.direction === 'theyOwe') theyOwe += u; else iOwe += u;
+  }
+  const zDue = zakatDueDate(st);
+  let zakatSub = 'احسب زكاتك';
+  if (zDue) { const left = daysUntil(zDue); zakatSub = left >= 0 ? `بعد ${daysText(left)}` : 'مستحقة'; }
+  let debtSub = 'ما في ديون';
+  if (theyOwe > 0.005) debtSub = `إلك ${fmt(theyOwe)}`;
+  else if (iOwe > 0.005) debtSub = `عليك ${fmt(iOwe)}`;
+  const tile = (iconName, tint, title, sub, path) => h('button', { class: 'tile', type: 'button', onclick: () => { haptic('tap'); open(path); } },
+    badge(iconName, tint, 38), h('div', null, h('b', null, title), h('small', null, sub)));
+  return h('section', { class: 'tiles', 'aria-label': 'اختصارات' },
+    tile('trend', 'blue', 'السنة', P.totals.income > 0 ? `آخر السنة ${fmt(P.endBalance)}` : 'خطة 12 شهر', 'plan/year'),
+    tile('bag', 'violet', 'المشتريات', planned.length ? `${planned.length} بالخطة` : 'ضيف غرض', 'plan/items'),
+    tile('target', 'gold', 'الأهداف', st.goals.length ? `${st.goals.length} هدف` : 'ادّخر لشي', 'plan/goals'),
+    tile('people', 'pink', 'الديون', debtSub, 'money/debts'),
+    tile('moon', 'amber', 'الزكاة', zakatSub, 'money/zakat'),
+    tile('chart', 'teal', 'التحليل', 'وين راحت المصاري', 'activity/reports'));
+}
+
+/* ---------- الشهر ---------- */
+function monthCard(ms, p, key, open) {
+  const incRatio = p.income > 0 ? ms.income / p.income : 0;
+  const expRatio = p.total > 0 ? ms.expense / p.total : 0;
+  const expState = expRatio > 1 ? 'over' : expRatio >= 0.85 ? 'warn' : '';
+  return h('section', { class: 'group' },
+    h('div', { class: 'group-head' },
+      h('h2', null, monthLabel(key)),
+      h('button', { class: 'link-btn', type: 'button', onclick: () => open('activity/reports') }, 'التحليل', icon('chevL', 16))),
+    h('div', { class: 'duo' },
+      h('div', null,
+        h('small', null, 'الدخل اللي وصل'),
+        h('b', { class: 'amount income' }, fmt(ms.income)),
+        p.income > 0 ? bar(incRatio) : null,
+        h('span', null, p.income > 0 ? `من ${fmt(p.income)} متوقع` : 'ما في دخل متوقع')),
+      h('div', null,
+        h('small', null, 'المصروف'),
+        h('b', { class: `amount ${expState === 'over' ? 'over' : ''}`.trim() }, fmt(ms.expense)),
+        p.total > 0 ? bar(expRatio, expState) : null,
+        h('span', null, p.total > 0 ? `من ميزانية ${fmt(p.total)}` : 'ما في ميزانية'))),
+    p.savings > 0 ? h('p', { class: 'row-note' }, `خطتك تشيل ${fmt(p.savings)} ادخار هالشهر.`) : null);
+}
+
+function budgetsCard(st, ms, open) {
   const items = st.categories
     .filter((c) => c.type === 'expense' && ((c.budget || 0) > 0 || (ms.byCat.get(c.id) || 0) > 0))
     .map((c) => ({ c, spent: ms.byCat.get(c.id) || 0 }))
-    .sort((x, y) => y.spent - x.spent || (y.c.budget || 0) - (x.c.budget || 0));
+    .sort((x, y) => (y.spent / (y.c.budget || 1)) - (x.spent / (x.c.budget || 1)))
+    .slice(0, 4);
   if (!items.length) return null;
-  return group('الفئات هالشهر', items.map(({ c, spent }) => {
+  return group('الميزانية', items.map(({ c, spent }) => {
     const b = c.budget || 0;
     const ratio = b ? spent / b : 0;
-    const state = !b ? '' : ratio > 1 ? 'over' : ratio >= 0.8 ? 'warn' : '';
+    const state = !b ? '' : ratio > 1 ? 'over' : ratio >= 0.85 ? 'warn' : '';
     return h('div', { class: 'row' },
-      h('span', { class: 'tx-icon', 'aria-hidden': 'true' }, c.icon),
+      badge(catIcon(c), catTint(c), 40),
       h('span', { class: 'row-main' },
-        h('span', { class: 'row-title' }, c.name),
+        h('span', { class: 'row-title' }, catLabel(c)),
         b ? bar(ratio, state) : null),
       h('span', { class: 'row-end' },
         h('span', { class: `amount ${state}`.trim() }, fmt(spent)),
         b ? h('span', { class: 'row-sub' }, `من ${fmt(b)}`) : null));
+  }), { action: h('button', { class: 'link-btn', type: 'button', onclick: () => open('plan/month') }, 'عدّل', icon('chevL', 16)) });
+}
+
+function upcomingCard(st, P, key, open) {
+  const entries = P.rows.slice(0, 3).flatMap((r) => r.entries
+    .filter((e) => e.kind !== 'bought' && e.kind !== 'debtDone')
+    .map((e) => ({ ...e, month: r.month })));
+  if (!entries.length) return null;
+  const when = (e, word) => (e.month === key ? `${word} هالشهر` : `${word} بـ ${monthLabel(e.month, { year: false })}`);
+  return group('جاية قريباً', entries.slice(0, 4).map((e) => {
+    let sub;
+    let path = 'plan/items';
+    if (e.kind === 'commitment') sub = e.it.month < key ? 'التزام فات موعده' : when(e, 'التزام');
+    else if (e.kind === 'debtIn') { sub = when(e, 'دين راجع إلك'); path = 'money/debts'; }
+    else if (e.kind === 'debtOut') { sub = when(e, 'دين لازم تسدّه'); path = 'money/debts'; }
+    else sub = e.month === key ? 'فيك تشتريه هالشهر' : `مخطط بـ ${monthLabel(e.month, { year: false })}`;
+    const tint = e.kind === 'debtIn' ? 'blue' : e.kind === 'debtOut' || e.kind === 'commitment' ? 'coral' : 'violet';
+    return h('button', { class: 'row', type: 'button', onclick: () => open(path) },
+      badge(e.it.icon || 'bag', tint, 40),
+      h('span', { class: 'row-main' },
+        h('span', { class: 'row-title' }, e.it.name),
+        h('span', { class: 'row-sub' }, sub)),
+      h('span', { class: 'row-end' }, h('span', { class: `amount ${e.kind === 'debtIn' ? 'income' : ''}`.trim() }, fmt(e.usd, 'USD', { sign: e.kind === 'debtIn' }))));
   }));
 }
 
-function recentGroup(st, go) {
+function recentCard(st, open) {
   const recent = sortTx(st.transactions).slice(0, 5);
   if (!recent.length) {
     return h('section', { class: 'group' },
-      h('div', { class: 'empty small' }, h('p', null, 'لسّا ما سجّلت شي. اكتب أول مصروف بالخانة فوق.')));
+      h('div', { class: 'empty small' }, h('p', null, 'لسّا ما سجّلت شي. اكتب أول مصروف بالخانة فوق، أو اضغط زر + تحت.')));
   }
   return group('آخر العمليات', recent.map((t) => txRow(t, st, { showDate: true })), {
-    action: h('button', { class: 'link-btn', type: 'button', onclick: () => go('tx') }, 'كل العمليات'),
+    action: h('button', { class: 'link-btn', type: 'button', onclick: () => open('activity') }, 'السجل', icon('chevL', 16)),
   });
 }
+
+// للاستعمال من أماكن تانية (الملخّص)
+export { netWorth };

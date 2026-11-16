@@ -1,5 +1,6 @@
 // نماذج الإضافة والتعديل: العمليات، المحافظ، مصادر الدخل، الفئات، أسعار الصرف
-import { h, fill, openSheet, confirmSheet, toast, field, segmented } from './ui.js';
+import { h, icon, fill, openSheet, confirmSheet, toast, field, segmented, iconPicker, haptic } from './ui.js';
+import { badge, CATEGORY_ICON_CHOICES, ITEM_ICON_CHOICES, GOAL_ICON_CHOICES, TINT_KEYS, tintHex } from './icons.js';
 import { store, uid, PROTECTED_CATEGORIES } from './store.js';
 import { CURRENCIES, CODES, rateOf, toUSD, fromUSD, fmt, numText, parseAmount, roundTo } from './money.js';
 import { todayISO, currentMonth, addMonths, monthLabel, monthsText, txCountText } from './dates.js';
@@ -7,11 +8,11 @@ import { refreshRates } from './rates.js';
 import { buildPlan, scheduleText, statusClass, goalMonthly } from './planner.js';
 
 export const INCOME_KINDS = {
-  salary: { label: 'راتب', icon: '💼', placeholder: 'مثلاً: راتب الشغل' },
-  stocks: { label: 'أسهم', icon: '📈', placeholder: 'مثلاً: أرباح الأسهم' },
-  extra: { label: 'دخل إضافي', icon: '🧰', placeholder: 'مثلاً: شغل جانبي' },
-  debt: { label: 'دين إلي', icon: '🤝', placeholder: 'مثلاً: دين عند فلان' },
-  other: { label: 'غير ذلك', icon: '➕', placeholder: 'اسم مصدر الدخل' },
+  salary: { label: 'راتب', icon: 'briefcase', placeholder: 'مثلاً: راتب الشغل' },
+  stocks: { label: 'أسهم', icon: 'trend', placeholder: 'مثلاً: أرباح الأسهم' },
+  extra: { label: 'دخل إضافي', icon: 'toolbox', placeholder: 'مثلاً: شغل جانبي' },
+  debt: { label: 'دين إلي', icon: 'exchange', placeholder: 'مثلاً: دين عند فلان' },
+  other: { label: 'غير ذلك', icon: 'plusCircle', placeholder: 'اسم مصدر الدخل' },
 };
 
 const TX_TYPES = [
@@ -72,7 +73,7 @@ export function openTxForm({ tx = null, type = 'expense', prefill = {} } = {}) {
     : {
       type, amount: prefill.amount != null ? cleanNum(prefill.amount) : '', accountId: prefill.accountId || defAcc.id,
       toAccountId: null, toAmount: '', categoryId: prefill.categoryId || null, date: prefill.date || todayISO(),
-      note: prefill.note || '', rate: '', toTouched: false, adopt: true,
+      note: prefill.note || '', rate: '', toTouched: false, adopt: true, sourceId: prefill.sourceId || null,
     };
 
   openSheet(editing ? 'تعديل العملية' : 'عملية جديدة', (body, close) => {
@@ -154,7 +155,7 @@ export function openTxForm({ tx = null, type = 'expense', prefill = {} } = {}) {
               d.categoryId = x.id;
               for (const b of chips.children) b.setAttribute('aria-pressed', String(b === e.currentTarget));
             },
-          }, `${x.icon} ${x.name}`)));
+          }, badge(x.icon, x.tint, 22), x.name)));
         nodes.push(h('div', { class: 'field' }, h('span', { class: 'field-label' }, 'الفئة'), chips));
       }
 
@@ -200,6 +201,9 @@ export function openTxForm({ tx = null, type = 'expense', prefill = {} } = {}) {
         note: d.note.trim(), createdAt: tx?.createdAt || Date.now(),
       };
       if (tx?.planItemId) rec.planItemId = tx.planItemId;
+      if (tx?.noDaily) rec.noDaily = true;
+      const sourceId = tx?.sourceId || d.sourceId;
+      if (sourceId && d.type === 'income') rec.sourceId = sourceId;
       let adopt = null;
       if (d.type === 'transfer') {
         if (!d.toAccountId || d.toAccountId === d.accountId) return fail('اختار محفظة ثانية تحوّل لها.');
@@ -334,7 +338,7 @@ export function openSourceForm(src = null) {
             Object.entries(INCOME_KINDS).filter(([id]) => id !== 'debt' || d.kind === 'debt').map(([id, x]) => h('button', {
               type: 'button', class: 'chip', 'aria-pressed': String(id === d.kind),
               onclick: () => { d.kind = id; if (id === 'debt') d.schedule = 'once'; render(); },
-            }, `${x.icon} ${x.label}`)))),
+            }, icon(x.icon, 16), x.label)))),
         field('الاسم', h('input', { type: 'text', value: d.name, placeholder: k.placeholder, oninput: (e) => { d.name = e.target.value; } })),
         h('div', { class: 'two' },
           field(d.kind === 'stocks' ? 'المعدل الشهري' : 'المبلغ', h('input', { type: 'text', inputmode: 'decimal', value: d.amount, placeholder: '0', oninput: (e) => { d.amount = e.target.value; } })),
@@ -375,32 +379,41 @@ export function openSourceForm(src = null) {
 }
 
 /* ---------- فئة ---------- */
-const EMOJIS = ['🍽️', '☕', '🛒', '🚕', '🧾', '🏠', '💊', '👕', '🎁', '🤲', '📦', '📚', '🎓', '🎮', '✂️', '🔧', '✈️', '🐾', '👶', '💳', '📱', '💼', '📈', '🧰', '🤝', '➕'];
+// مفتاح تشغيل وإطفاء
+export function switchRow(title, sub, checked, onChange) {
+  return h('label', { class: 'switch-row' },
+    h('span', { class: 'row-main' }, h('span', { class: 'row-title' }, title), sub ? h('span', { class: 'row-sub wrap' }, sub) : null),
+    h('span', { class: 'switch' }, h('input', { type: 'checkbox', checked, onchange: (e) => { haptic('select'); onChange(e.target.checked); } }), h('i')));
+}
 
 export function openCategoryForm(cat = null, type = 'expense') {
   const editing = Boolean(cat);
   const d = {
-    type: cat?.type || type, name: cat?.name || '', icon: cat?.icon || '🏷️',
-    budget: cat?.budget ? cleanNum(cat.budget) : '', fixed: Boolean(cat?.fixed), aliases: (cat?.aliases || []).join('، '),
+    type: cat?.type || type, name: cat?.name || '', icon: cat?.icon || 'tag', tint: cat?.tint || 'mint',
+    budget: cat?.budget ? cleanNum(cat.budget) : '', fixed: Boolean(cat?.fixed), private: Boolean(cat?.private),
+    aliases: (cat?.aliases || []).join('، '),
   };
   openSheet(editing ? 'تعديل الفئة' : 'فئة جديدة', (body, close) => {
     let err = null;
+    let preview = null;
+    const nameInput = h('input', { type: 'text', value: d.name, placeholder: d.type === 'expense' ? 'مثلاً: كتب ودورات' : 'مثلاً: إيجار محل', oninput: (e) => { d.name = e.target.value; } });
     function render() {
       err = h('p', { class: 'form-error', role: 'alert' });
+      preview = badge(d.icon, d.tint, 52);
       fill(body, [
         editing ? null : segmented([{ value: 'expense', label: 'مصروف' }, { value: 'income', label: 'دخل' }], d.type, (v) => { d.type = v; render(); }, 'نوع الفئة'),
-        h('div', { class: 'name-row' },
-          h('span', { class: 'tx-icon big', 'aria-hidden': 'true' }, d.icon),
-          field('اسم الفئة', h('input', { type: 'text', value: d.name, placeholder: d.type === 'expense' ? 'مثلاً: كتب ودورات' : 'مثلاً: إيجار محل', oninput: (e) => { d.name = e.target.value; } }))),
+        h('div', { class: 'name-row' }, preview, field('اسم الفئة', nameInput)),
+        h('div', { class: 'field' }, h('span', { class: 'field-label' }, 'اللون'),
+          h('div', { class: 'tint-row', role: 'group', 'aria-label': 'اللون' }, TINT_KEYS.map((k) => h('button', {
+            type: 'button', class: 'tint-dot', 'aria-label': k, 'aria-pressed': String(k === d.tint), style: { '--tint': tintHex(k) },
+            onclick: () => { haptic('select'); d.tint = k; render(); },
+          })))),
         h('div', { class: 'field' }, h('span', { class: 'field-label' }, 'الأيقونة'),
-          h('div', { class: 'emoji-grid' }, EMOJIS.map((e) => h('button', {
-            type: 'button', class: 'emoji', 'aria-label': `أيقونة ${e}`, 'aria-pressed': String(e === d.icon),
-            onclick: () => { d.icon = e; render(); },
-          }, e)))),
+          iconPicker(CATEGORY_ICON_CHOICES, d.icon, (name) => { d.icon = name; preview.replaceWith(preview = badge(d.icon, d.tint, 52)); }, tintHex(d.tint))),
         d.type === 'expense' ? field('الميزانية الشهرية بالدولار', h('input', { type: 'text', inputmode: 'decimal', value: d.budget, placeholder: '0', oninput: (e) => { d.budget = e.target.value; } })) : null,
-        d.type === 'expense' ? h('label', { class: 'check' },
-          h('input', { type: 'checkbox', checked: d.fixed, onchange: (e) => { d.fixed = e.target.checked; } }),
-          'مصروف ثابت متل الإيجار والفواتير. ما بيدخل بحساب مصروف اليوم.') : null,
+        h('div', { class: 'sheet-rows rows' },
+          d.type === 'expense' ? switchRow('مصروف ثابت', 'متل الإيجار والفواتير. ما بيدخل بحساب مصروف اليوم.', d.fixed, (v) => { d.fixed = v; }) : null,
+          switchRow('اسم خاص', 'بيختفي الاسم والأيقونة بكل مكان، وبيطلع «خاص» بدالهم. المبلغ بيضل محسوب.', d.private, (v) => { d.private = v; })),
         field('كلمات بتدل عليها', h('input', { type: 'text', value: d.aliases, placeholder: 'مثلاً: كتاب، دورة، قرطاسية', oninput: (e) => { d.aliases = e.target.value; } }),
           'لما تكتب وحدة منها بالإدخال السريع، بتنحط العملية بهالفئة.'),
         err,
@@ -414,7 +427,7 @@ export function openCategoryForm(cat = null, type = 'expense') {
       if (!name) { err.textContent = 'اكتب اسم الفئة.'; return; }
       const budget = d.type === 'expense' ? parseAmount(d.budget) : 0;
       const rec = {
-        ...(cat || {}), id: cat?.id || uid('cat'), type: d.type, name, icon: d.icon,
+        ...(cat || {}), id: cat?.id || uid('cat'), type: d.type, name, icon: d.icon, tint: d.tint, private: d.private,
         budget: budget > 0 ? budget : 0, fixed: d.type === 'expense' && d.fixed,
         aliases: d.aliases.split(/[،,\s]+/).map((x) => x.trim()).filter(Boolean),
       };
@@ -485,7 +498,6 @@ export function openRateForm(code) {
 }
 
 /* ---------- غرض بدك تشتريه أو التزام ---------- */
-const ITEM_EMOJIS = ['🛍️', '📌', '💻', '📱', '🛋️', '🧊', '🚗', '🏍️', '⌚', '🎧', '📷', '🎮', '👔', '💍', '🏠', '🔧', '✈️', '🎓', '🩺', '🕋', '🎁', '📦'];
 const PRIORITY_OPTS = [{ value: 1, label: 'مهم' }, { value: 2, label: 'متوسط' }, { value: 3, label: 'بيستنى' }];
 const isMonth = (m) => /^\d{4}-\d{2}$/.test(m || '');
 
@@ -493,7 +505,7 @@ export function openItemForm(item = null, kind = 'want') {
   const editing = Boolean(item);
   const bought = item?.status === 'bought';
   const d = {
-    kind: item?.kind || kind, name: item?.name || '', icon: item?.icon || (kind === 'commitment' ? '📌' : '🛍️'),
+    kind: item?.kind || kind, name: item?.name || '', icon: item?.icon || (kind === 'commitment' ? 'pin' : 'bag'),
     amount: item ? cleanNum(item.amount) : '', currency: item?.currency || 'USD', priority: item?.priority || 2,
     month: item?.month || (kind === 'commitment' ? addMonths(currentMonth(), 1) : ''), note: item?.note || '',
   };
@@ -510,21 +522,18 @@ export function openItemForm(item = null, kind = 'want') {
         editing ? null : segmented([{ value: 'want', label: 'بدي اشتريه' }, { value: 'commitment', label: 'التزام لازم' }], d.kind, (v) => {
           d.kind = v;
           if (v === 'commitment' && !d.month) d.month = addMonths(currentMonth(), 1);
-          if (d.icon === '🛍️' || d.icon === '📌') d.icon = v === 'commitment' ? '📌' : '🛍️';
+          if (d.icon === 'bag' || d.icon === 'pin') d.icon = v === 'commitment' ? 'pin' : 'bag';
           render();
         }, 'النوع'),
         s ? h('p', { class: `plan-status ${statusClass(s)}`.trim() }, scheduleText(item, s)) : null,
         h('div', { class: 'name-row' },
-          h('span', { class: 'tx-icon big', 'aria-hidden': 'true' }, d.icon),
+          badge(d.icon, d.kind === 'commitment' ? 'coral' : 'violet', 52),
           field('الاسم', h('input', {
             type: 'text', value: d.name, placeholder: d.kind === 'commitment' ? 'مثلاً: قسط الجامعة' : 'مثلاً: لابتوب',
             'data-autofocus': !editing, oninput: (e) => { d.name = e.target.value; },
           }))),
         h('div', { class: 'field' }, h('span', { class: 'field-label' }, 'الأيقونة'),
-          h('div', { class: 'emoji-grid' }, ITEM_EMOJIS.map((e) => h('button', {
-            type: 'button', class: 'emoji', 'aria-label': `أيقونة ${e}`, 'aria-pressed': String(e === d.icon),
-            onclick: () => { d.icon = e; render(); },
-          }, e)))),
+          iconPicker(ITEM_ICON_CHOICES, d.icon, (name) => { d.icon = name; render(); }, tintHex(d.kind === 'commitment' ? 'coral' : 'violet'))),
         h('div', { class: 'two' },
           field(d.kind === 'commitment' ? 'المبلغ' : 'السعر التقريبي', h('input', { type: 'text', inputmode: 'decimal', value: d.amount, placeholder: '0', oninput: (e) => { d.amount = e.target.value; } })),
           field('العملة', h('select', { value: d.currency, onchange: (e) => { d.currency = e.target.value; } },
@@ -638,7 +647,7 @@ export function openBoughtForm(item) {
             d.categoryId = x.id;
             for (const b of chips.children) b.setAttribute('aria-pressed', String(b === e.currentTarget));
           },
-        }, `${x.icon} ${x.name}`)));
+        }, badge(x.icon, x.tint, 22), x.name)));
       fill(body, [
         h('p', { class: 'hint' }, 'اكتب المبلغ اللي دفعته فعلاً.'),
         h('div', { class: 'amount-wrap' }, c.prefix ? [sym, amountInput] : [amountInput, sym]),
@@ -695,12 +704,10 @@ export function openBoughtForm(item) {
 }
 
 /* ---------- هدف ادخار ---------- */
-const GOAL_EMOJIS = ['🎯', '🛟', '📈', '🏠', '🚗', '💍', '🕋', '🎓', '✈️', '💻', '👶', '🏪'];
-
 export function openGoalForm(goal = null, preset = {}) {
   const editing = Boolean(goal);
   const d = {
-    name: goal?.name ?? preset.name ?? '', icon: goal?.icon || preset.icon || '🎯',
+    name: goal?.name ?? preset.name ?? '', icon: goal?.icon || preset.icon || 'target',
     target: goal ? cleanNum(goal.target) : preset.target ? cleanNum(Math.round(preset.target)) : '',
     saved: goal ? cleanNum(goal.saved || 0) : '', deadline: goal?.deadline || preset.deadline || addMonths(currentMonth(), 11),
     kind: goal?.kind || preset.kind || 'goal',
@@ -714,13 +721,10 @@ export function openGoalForm(goal = null, preset = {}) {
       hint = h('p', { class: 'plan-status' });
       fill(body, [
         h('div', { class: 'name-row' },
-          h('span', { class: 'tx-icon big', 'aria-hidden': 'true' }, d.icon),
+          badge(d.icon, 'gold', 52),
           field('اسم الهدف', h('input', { type: 'text', value: d.name, placeholder: 'مثلاً: سيارة، عمرة، دفعة بيت', oninput: (e) => { d.name = e.target.value; } }))),
         h('div', { class: 'field' }, h('span', { class: 'field-label' }, 'الأيقونة'),
-          h('div', { class: 'emoji-grid' }, GOAL_EMOJIS.map((e) => h('button', {
-            type: 'button', class: 'emoji', 'aria-label': `أيقونة ${e}`, 'aria-pressed': String(e === d.icon),
-            onclick: () => { d.icon = e; render(); },
-          }, e)))),
+          iconPicker(GOAL_ICON_CHOICES, d.icon, (name) => { d.icon = name; render(); }, tintHex('gold'))),
         h('div', { class: 'two' },
           field('المبلغ المطلوب بالدولار', h('input', { type: 'text', inputmode: 'decimal', value: d.target, placeholder: '0', oninput: (e) => { d.target = e.target.value; refreshHint(); } })),
           field('جمعت لهلّق', h('input', { type: 'text', inputmode: 'decimal', value: d.saved, placeholder: '0', oninput: (e) => { d.saved = e.target.value; refreshHint(); } }))),
@@ -839,7 +843,7 @@ export function openWhatIf() {
 
       const add = (kind) => {
         store.update((s) => s.planItems.push({
-          id: uid('item'), kind, name: probe.name, icon: kind === 'commitment' ? '📌' : '🛍️', amount, currency: d.currency,
+          id: uid('item'), kind, name: probe.name, icon: kind === 'commitment' ? 'pin' : 'bag', amount, currency: d.currency,
           priority: kind === 'want' ? 2 : null, month: kind === 'commitment' ? probe.month : null, note: '',
           status: 'planned', createdAt: Date.now(),
         }));

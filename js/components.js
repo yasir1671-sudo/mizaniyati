@@ -1,7 +1,9 @@
 // قطع مشتركة بين الصفحات
-import { h } from './ui.js';
+import { h, icon } from './ui.js';
+import { badge } from './icons.js';
 import { fmt } from './money.js';
 import { dayLabel } from './dates.js';
+import { catLabel, catIcon, catTint } from './store.js';
 import { openTxForm } from './forms.js';
 import { openDebtForm, debtTxTitle } from './debts.js';
 
@@ -24,10 +26,26 @@ export function bar(ratio, state = '') {
     h('i', { style: { width: `${Math.max(0, Math.min(100, ratio * 100))}%` } }));
 }
 
+// صف قابل للضغط مع سهم
+export function navRow({ iconName, tint, title, sub, end, onclick }) {
+  return h('button', { class: 'row', type: 'button', onclick },
+    iconName ? badge(iconName, tint, 40) : null,
+    h('span', { class: 'row-main' },
+      h('span', { class: 'row-title' }, title),
+      sub ? h('span', { class: 'row-sub wrap' }, sub) : null),
+    end ? h('span', { class: 'row-end' }, end) : null,
+    h('span', { class: 'chev' }, icon('chevL', 18)));
+}
+
+export function emptyState(iconName, text, action) {
+  return h('div', { class: 'empty' }, badge(iconName, 'mint', 56), h('p', null, text), action || null);
+}
+
 export function txRow(t, st, { showDate = false } = {}) {
   const acc = st.accounts.find((a) => a.id === t.accountId);
   const cur = acc?.currency || 'USD';
-  let iconText;
+  let iconName = 'tag';
+  let tint = 'slate';
   let title;
   let sub;
   let amount;
@@ -37,7 +55,8 @@ export function txRow(t, st, { showDate = false } = {}) {
 
   if (t.type === 'debt') {
     const debt = st.debts.find((x) => x.id === t.debtId);
-    iconText = '🤝';
+    iconName = 'exchange';
+    tint = 'violet';
     title = debtTxTitle(t, debt);
     sub = t.initial ? acc?.name || '' : `دفعة، ${acc?.name || ''}`;
     amount = fmt(t.flow === 'in' ? t.amount : -t.amount, cur, { sign: true });
@@ -46,16 +65,19 @@ export function txRow(t, st, { showDate = false } = {}) {
   } else if (t.type === 'transfer') {
     const to = st.accounts.find((a) => a.id === t.toAccountId);
     const exchange = to && to.currency !== cur;
-    iconText = '⇄';
+    iconName = 'swap';
+    tint = 'teal';
     title = exchange ? 'تصريف' : 'تحويل';
     sub = `${acc?.name ?? '؟'} ← ${to?.name ?? '؟'}`;
     amount = fmt(t.amount, cur);
     if (exchange) sub2 = fmt(t.toAmount, to.currency);
   } else {
     const c = st.categories.find((x) => x.id === t.categoryId);
-    iconText = c?.icon || '•';
-    title = c?.name || 'بدون فئة';
-    sub = t.note || acc?.name || '';
+    iconName = catIcon(c);
+    tint = catTint(c);
+    title = catLabel(c);
+    // ملاحظة الفئة الخاصة كمان بتنخفى
+    sub = c?.private ? acc?.name || '' : t.note || acc?.name || '';
     amount = fmt(t.type === 'expense' ? -t.amount : t.amount, cur, { sign: true });
     cls = t.type === 'income' ? 'income' : '';
     if (cur !== 'USD' && Number.isFinite(t.usd)) sub2 = `≈ ${fmt(t.usd, 'USD')}`;
@@ -63,7 +85,7 @@ export function txRow(t, st, { showDate = false } = {}) {
   if (showDate) sub = sub ? `${dayLabel(t.date)}، ${sub}` : dayLabel(t.date);
 
   return h('button', { class: 'row', type: 'button', onclick },
-    h('span', { class: 'tx-icon', 'aria-hidden': 'true' }, iconText),
+    badge(iconName, tint, 40),
     h('span', { class: 'row-main' },
       h('span', { class: 'row-title' }, title),
       sub ? h('span', { class: 'row-sub' }, sub) : null),

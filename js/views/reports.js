@@ -1,6 +1,7 @@
 // التقارير: أرقام الشهر، المصروف حسب الفئة، وآخر 6 شهور
-import { h, fill } from '../ui.js';
-import { store } from '../store.js';
+import { h, fill, icon } from '../ui.js';
+import { badge } from '../icons.js';
+import { store, catLabel, catIcon, catTint } from '../store.js';
 import { fmt } from '../money.js';
 import { addMonths, currentMonth, monthLabel, MONTHS, SHORT_MONTHS, daysInMonth, todayISO, daysText } from '../dates.js';
 import { monthStats, monthTx } from '../calc.js';
@@ -8,15 +9,55 @@ import { group, bar } from '../components.js';
 
 let selected = null;
 let showTable = false;
+let month = null;
 
-export function renderReports(month) {
+export function renderReportsPage({ open }) {
+  month ||= currentMonth();
   const st = store.state;
   const ms = monthStats(st, month);
   return [
+    h('div', { class: 'month-nav' },
+      h('button', { class: 'icon-btn', type: 'button', 'aria-label': 'الشهر السابق', onclick: () => { month = addMonths(month, -1); redraw(); } }, icon('chevR')),
+      h('strong', null, monthLabel(month)),
+      h('button', { class: 'icon-btn', type: 'button', 'aria-label': 'الشهر التالي', onclick: () => { month = addMonths(month, 1); redraw(); } }, icon('chevL'))),
+    insightsGroup(st, month, ms),
     statsGroup(st, month, ms),
     categoryGroup(st, ms),
     trendGroup(st, month),
   ];
+  function redraw() { store.update(() => {}, {}); }
+}
+
+// ملاحظات ذكية: توقّع آخر الشهر، والفئة اللي زادت عن معدلها
+function insightsGroup(st, key, ms) {
+  const tips = [];
+  const cur = currentMonth();
+  if (key === cur && ms.expense > 0.005) {
+    const [y, m] = key.split('-').map(Number);
+    const day = Number(todayISO().slice(8, 10));
+    const dim = daysInMonth(y, m - 1);
+    if (day >= 5) {
+      const projected = (ms.expense / day) * dim;
+      const budget = st.categories.filter((c) => c.type === 'expense').reduce((s, c) => s + (Number(c.budget) || 0), 0);
+      const over = budget > 0 && projected > budget * 1.05;
+      tips.push({ iconName: over ? 'alert' : 'trend', tint: over ? 'coral' : 'teal', text: `إذا كمّلت بهالمعدل، رح تصرف بآخر الشهر حوالي ${fmt(projected)}${budget > 0 ? (over ? `، يعني أكتر من ميزانيتك (${fmt(budget)}).` : `، وهاد ضمن ميزانيتك (${fmt(budget)}).`) : '.'}` });
+    }
+  }
+  // مقارنة كل فئة بمعدل آخر 3 شهور
+  const prev = [1, 2, 3].map((i) => monthStats(st, addMonths(key, -i)));
+  let best = null;
+  for (const [id, v] of ms.byCat) {
+    const avg = prev.reduce((s, p) => s + (p.byCat.get(id) || 0), 0) / 3;
+    if (avg < 5 || v - avg < 10) continue;
+    const pct = Math.round(((v - avg) / avg) * 100);
+    if (pct >= 25 && (!best || pct > best.pct)) best = { id, pct, v, avg };
+  }
+  if (best) {
+    const c = st.categories.find((x) => x.id === best.id);
+    tips.push({ iconName: catIcon(c), tint: catTint(c), text: `صرفك على ${catLabel(c)} هالشهر أكتر من معدلك بـ ${best.pct}% (المعدل ${fmt(best.avg)}).` });
+  }
+  if (!tips.length) return null;
+  return group('ملاحظات', tips.map((t) => h('div', { class: 'insight' }, badge(t.iconName, t.tint, 36), h('p', null, t.text))));
 }
 
 function line(label, value, sub, cls = '') {
@@ -55,7 +96,7 @@ function statsGroup(st, month, ms) {
     line('الدخل', fmt(ms.income), null, 'income'),
     line(net < 0 ? 'صرفت أكتر من دخلك بـ' : 'وفّرت من دخلك', fmt(Math.abs(net)), null, net < 0 ? 'over' : 'income'),
     days > 0 ? line('معدل الصرف باليوم', fmt(ms.expense / days), `على ${daysText(days)}`) : null,
-    biggest ? line('أكبر مصروف', fmt(biggest.usd), [bigCat?.name, biggest.note].filter(Boolean).join('، ')) : null,
+    biggest ? line('أكبر مصروف', fmt(biggest.usd), [catLabel(bigCat), bigCat?.private ? '' : biggest.note].filter(Boolean).join('، ')) : null,
   ]);
 }
 
@@ -71,9 +112,9 @@ function categoryGroup(st, ms) {
     let sub = `${share}% من المصروف`;
     if (budget) sub += `، من ميزانية ${fmt(budget)}`;
     return h('div', { class: 'row' },
-      h('span', { class: 'tx-icon', 'aria-hidden': 'true' }, c?.icon || '•'),
+      badge(catIcon(c), catTint(c), 40),
       h('span', { class: 'row-main' },
-        h('span', { class: 'row-title' }, c?.name || 'بدون فئة'),
+        h('span', { class: 'row-title' }, catLabel(c)),
         bar(v / max),
         h('span', { class: 'row-sub' }, sub)),
       h('span', { class: 'row-end' }, h('span', { class: `amount ${budget && v > budget ? 'over' : ''}`.trim() }, fmt(v))));

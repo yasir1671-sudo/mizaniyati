@@ -49,9 +49,14 @@ export function numText(n, decimals = 4) {
   return LRI + fmtNumber(n, decimals, true) + PDI;
 }
 
-export function fmt(amount, code = 'USD', { sign = false } = {}) {
+// وضع الخصوصية: بيخفي كل المبالغ (لما تفرجي التطبيق لحدا)
+let hideAmounts = false;
+export function setHideAmounts(v) { hideAmounts = Boolean(v); }
+
+export function fmt(amount, code = 'USD', { sign = false, reveal = false } = {}) {
   const c = CURRENCIES[code] || { symbol: code, decimals: 2, prefix: false };
   if (!Number.isFinite(amount)) return '—';
+  if (hideAmounts && !reveal) return c.prefix ? `${LRI}${c.symbol}••••${PDI}` : `${LRI}••••${PDI} ${c.symbol}`;
   const tiny = 0.5 / 10 ** c.decimals;
   const s = amount < 0 && Math.abs(amount) >= tiny ? '−' : (sign && amount >= tiny ? '+' : '');
   const body = fmtNumber(Math.abs(amount), c.decimals);
