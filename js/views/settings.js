@@ -109,6 +109,7 @@ export function renderCategories() {
     const bits = [];
     if (c.type === 'expense') bits.push(c.budget ? `ميزانية ${fmt(c.budget)}` : 'بلا ميزانية');
     if (c.fixed) bits.push('ثابت');
+    else if (c.type === 'expense') bits.push(c.essential ? 'أساسي' : 'ثانوي');
     if (c.private) bits.push('الاسم مخفي');
     return h('button', { class: 'row', type: 'button', onclick: () => openCategoryForm(c) },
       badge(c.icon, c.tint, 42),

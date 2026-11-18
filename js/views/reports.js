@@ -4,7 +4,7 @@ import { badge } from '../icons.js';
 import { store, catLabel, catIcon, catTint } from '../store.js';
 import { fmt } from '../money.js';
 import { addMonths, currentMonth, monthLabel, MONTHS, SHORT_MONTHS, daysInMonth, todayISO, daysText } from '../dates.js';
-import { monthStats, monthTx } from '../calc.js';
+import { monthStats, monthTx, budgetFor, budgetTotals } from '../calc.js';
 import { group, bar } from '../components.js';
 
 let selected = null;
@@ -22,7 +22,7 @@ export function renderReportsPage({ open }) {
       h('button', { class: 'icon-btn', type: 'button', 'aria-label': 'الشهر التالي', onclick: () => { month = addMonths(month, 1); redraw(); } }, icon('chevL'))),
     insightsGroup(st, month, ms),
     statsGroup(st, month, ms),
-    categoryGroup(st, ms),
+    categoryGroup(st, ms, month),
     trendGroup(st, month),
   ];
   function redraw() { store.update(() => {}, {}); }
@@ -38,7 +38,7 @@ function insightsGroup(st, key, ms) {
     const dim = daysInMonth(y, m - 1);
     if (day >= 5) {
       const projected = (ms.expense / day) * dim;
-      const budget = st.categories.filter((c) => c.type === 'expense').reduce((s, c) => s + (Number(c.budget) || 0), 0);
+      const budget = budgetTotals(st, key).total;
       const over = budget > 0 && projected > budget * 1.05;
       tips.push({ iconName: over ? 'alert' : 'trend', tint: over ? 'coral' : 'teal', text: `إذا كمّلت بهالمعدل، رح تصرف بآخر الشهر حوالي ${fmt(projected)}${budget > 0 ? (over ? `، يعني أكتر من ميزانيتك (${fmt(budget)}).` : `، وهاد ضمن ميزانيتك (${fmt(budget)}).`) : '.'}` });
     }
@@ -100,7 +100,7 @@ function statsGroup(st, month, ms) {
   ]);
 }
 
-function categoryGroup(st, ms) {
+function categoryGroup(st, ms, key) {
   const entries = [...ms.byCat.entries()].filter(([, v]) => v > 0.005).sort((a, b) => b[1] - a[1]);
   if (!entries.length) return null;
   const max = entries[0][1];
@@ -108,7 +108,7 @@ function categoryGroup(st, ms) {
   return group('وين راحت المصاري', entries.map(([id, v]) => {
     const c = st.categories.find((x) => x.id === id);
     const share = Math.round((v / total) * 100);
-    const budget = c?.budget || 0;
+    const budget = c ? budgetFor(st, c, key) : 0;
     let sub = `${share}% من المصروف`;
     if (budget) sub += `، من ميزانية ${fmt(budget)}`;
     return h('div', { class: 'row' },

@@ -5,7 +5,7 @@ import { badge } from '../icons.js';
 import { store, uid, catLabel, catIcon, catTint } from '../store.js';
 import { CURRENCIES, fmt, rateOf, toUSD } from '../money.js';
 import { todayISO, monthLabel, daysText, daysUntil, longDate } from '../dates.js';
-import { dailyAllowance, plan, monthStats, netWorth, sortTx, debtRemaining } from '../calc.js';
+import { dailyAllowance, plan, monthStats, netWorth, sortTx, debtRemaining, budgetFor, monthOverride } from '../calc.js';
 import { parseQuick, parseMulti } from '../parse.js';
 import { openVoice, reviewText } from '../voice.js';
 import { openRateForm, INCOME_KINDS } from '../forms.js';
@@ -15,6 +15,12 @@ import { buildPlan } from '../planner.js';
 import { computeZakat, zakatDueDate } from '../zakat.js';
 import { openOnboarding } from '../onboarding.js';
 import { toggleHideAmounts } from '../pin.js';
+import { openPaidChoice } from './bills.js';
+import { monthBudgetBanner } from '../monthsheet.js';
+import { surplusCloseBanner } from '../goals.js';
+import { openWhatIf } from '../whatif.js';
+import { monthMap } from '../month.js';
+import { itemWhen } from '../planner.js';
 
 let introPlayed = false;
 
@@ -33,7 +39,8 @@ export function renderHome({ open }) {
     quickAdd(),
     frequentChips(st),
     dueCard(st, key),
-    cashCard(st, key, { compact: true }),
+    monthBudgetBanner(st) || cashCard(st, key, { compact: true }),
+    surplusCloseBanner(st),
     rateBanners(st),
     zakatBanner(st, open),
     backupBanner(st, open),
@@ -218,7 +225,7 @@ function dueCard(st, key) {
       const sub = partial ? `وصل جزء، باقي ${fmt(p.remaining, s.currency)}` : `${when}، ${fmt(p.remaining, s.currency)}`;
       const id = `src:${s.id}:${key}:${p.index}`;
       rows.push(swipeable(h('div', { class: 'row' },
-        badge(k.icon, 'mint', 40),
+        badge(k.icon, k.tint || 'mint', 40),
         h('span', { class: 'row-main' }, h('span', { class: 'row-title' }, title), h('span', { class: 'row-sub wrap' }, sub)),
         h('button', {
           class: 'btn small', type: 'button',
@@ -239,10 +246,7 @@ function dueCard(st, key) {
     rows.push(swipeable(h('div', { class: 'row' },
       badge(r.icon || catIcon(c), r.tint || catTint(c), 40),
       h('span', { class: 'row-main' }, h('span', { class: 'row-title' }, `تجديد «${r.name}»`), h('span', { class: `row-sub ${diff < 0 ? 'warn' : ''}`.trim() }, `${sub}، ${fmt(r.amount, r.currency)}`)),
-      h('button', {
-        class: 'btn secondary small', type: 'button',
-        onclick: () => openAddSheet({ type: 'expense', amount: r.amount, accountId: r.accountId || accFor(r.currency)?.id, categoryId: r.categoryId, note: r.name, recurringId: r.id }),
-      }, 'دفعته')), () => dismiss(id, r.name)));
+      h('button', { class: 'btn secondary small', type: 'button', onclick: () => openPaidChoice(r) }, 'دفعته')), () => dismiss(id, r.name)));
   }
   if (!rows.length) return null;
   return group('مستحقات هالشهر', rows.slice(0, 5), { action: rows.length ? h('span', { class: 'muted', style: { fontSize: '11.5px' } }, 'اسحب لتزيل') : null });
@@ -299,15 +303,26 @@ function tiles(st, P, open) {
   let debtSub = 'ما في ديون';
   if (theyOwe > 0.005) debtSub = `إلك ${fmt(theyOwe)}`;
   else if (iOwe > 0.005) debtSub = `عليك ${fmt(iOwe)}`;
-  const tile = (iconName, tint, title, sub, path) => h('button', { class: 'tile', type: 'button', onclick: () => { haptic('tap'); open(path); } },
+  const tile = (iconName, tint, title, sub, path, warn = false) => h('button', { class: `tile${warn ? ' warn' : ''}`, type: 'button', onclick: () => { haptic('tap'); if (typeof path === 'function') path(); else open(path); } },
     badge(iconName, tint, 38), h('div', null, h('b', null, title), h('small', null, sub)));
+  // خريطة الشهر: الجاي أو التنبيه
+  const M = monthMap(st, todayISO());
+  const nextEv = M.days.filter((x) => !x.past && !x.isToday).flatMap((x) => x.events.filter((e) => e.kind !== 'billPaid').map((e) => ({ e, day: x.day })))[0];
+  let mapSub = 'كل يوم شو فيه';
+  if (M.runOut) mapSub = `انتبه يوم ${M.runOut}`;
+  else if (nextEv) mapSub = `${nextEv.e.name} يوم ${nextEv.day}`;
+  const recs = (st.recurring || []).filter((r) => r.active !== false);
+  const confirmed = planned.filter((i) => i.kind === 'want' && i.confirmed).length;
   return h('section', { class: 'tiles', 'aria-label': 'اختصارات' },
-    tile('trend', 'blue', 'السنة', P.totals.income > 0 ? `آخر السنة ${fmt(P.endBalance)}` : 'خطة 12 شهر', 'plan/year'),
-    tile('bag', 'violet', 'المشتريات', planned.length ? `${planned.length} بالخطة` : 'ضيف غرض', 'plan/items'),
+    tile('calendar', 'teal', 'خريطة الشهر', mapSub, 'plan/calendar', Boolean(M.runOut)),
+    tile('bag', 'violet', 'المشتريات', planned.length ? (confirmed ? `${planned.length} بالخطة، ${confirmed} مثبّت` : `${planned.length} بالخطة`) : 'ضيف غرض', 'plan/items'),
     tile('target', 'gold', 'الأهداف', st.goals.length ? `${st.goals.length} هدف` : 'ادّخر لشي', 'plan/goals'),
+    tile('trend', 'blue', 'السنة', P.totals.income > 0 ? `آخر السنة ${fmt(P.endBalance)}` : 'خطة 12 شهر', 'plan/year'),
+    tile('receipt', 'sage', 'الاشتراكات', recs.length ? `${recs.length} بالشهر` : 'نت، موبايل…', 'plan/bills'),
+    tile('bulb', 'amber', 'شو لو؟', 'جرّب قبل ما تشتري', () => openWhatIf()),
     tile('people', 'pink', 'الديون', debtSub, 'money/debts'),
-    tile('moon', 'amber', 'الزكاة', zakatSub, 'money/zakat'),
-    tile('chart', 'teal', 'التحليل', 'وين راحت المصاري', 'activity/reports'));
+    tile('moon', 'gold', 'الزكاة', zakatSub, 'money/zakat'),
+    tile('chart', 'slate', 'التحليل', 'وين راحت المصاري', 'activity/reports'));
 }
 
 /* ---------- الشهر ---------- */
@@ -334,14 +349,15 @@ function monthCard(ms, p, key, open) {
 }
 
 function budgetsCard(st, ms, open) {
+  const key = todayISO().slice(0, 7);
   const items = st.categories
-    .filter((c) => c.type === 'expense' && ((c.budget || 0) > 0 || (ms.byCat.get(c.id) || 0) > 0))
-    .map((c) => ({ c, spent: ms.byCat.get(c.id) || 0 }))
-    .sort((x, y) => (y.spent / (y.c.budget || 1)) - (x.spent / (x.c.budget || 1)))
+    .filter((c) => c.type === 'expense')
+    .map((c) => ({ c, b: budgetFor(st, c, key), spent: ms.byCat.get(c.id) || 0 }))
+    .filter((x) => x.b > 0 || x.spent > 0)
+    .sort((x, y) => (y.spent / (y.b || 1)) - (x.spent / (x.b || 1)))
     .slice(0, 4);
   if (!items.length) return null;
-  return group('الميزانية', items.map(({ c, spent }) => {
-    const b = c.budget || 0;
+  return group(monthOverride(st, key) ? 'الميزانية (استثنائية هالشهر)' : 'الميزانية', items.map(({ c, b, spent }) => {
     const ratio = b ? spent / b : 0;
     const state = !b ? '' : ratio > 1 ? 'over' : ratio >= 0.85 ? 'warn' : '';
     return h('div', { class: 'row' },
@@ -364,11 +380,12 @@ function upcomingCard(st, P, key, open) {
   return group('جاية قريباً', entries.slice(0, 4).map((e) => {
     let sub;
     let path = 'plan/items';
-    if (e.kind === 'commitment') sub = e.it.month < key ? 'التزام فات موعده' : when(e, 'التزام');
+    if (e.kind === 'commitment') sub = (e.it.date || e.it.month || key) < key ? 'التزام فات موعده' : `التزام ${itemWhen(e.it)}`;
+    else if (e.kind === 'confirmed') sub = `مثبّت ${itemWhen(e.it)}، مبلغه محجوز`;
     else if (e.kind === 'debtIn') { sub = when(e, 'دين راجع إلك'); path = 'money/debts'; }
     else if (e.kind === 'debtOut') { sub = when(e, 'دين لازم تسدّه'); path = 'money/debts'; }
     else sub = e.month === key ? 'فيك تشتريه هالشهر' : `مخطط بـ ${monthLabel(e.month, { year: false })}`;
-    const tint = e.kind === 'debtIn' ? 'blue' : e.kind === 'debtOut' || e.kind === 'commitment' ? 'coral' : 'violet';
+    const tint = e.kind === 'debtIn' ? 'blue' : e.kind === 'debtOut' || e.kind === 'commitment' ? 'coral' : e.kind === 'confirmed' ? 'gold' : 'violet';
     return h('button', { class: 'row', type: 'button', onclick: () => open(path) },
       badge(e.it.icon || 'bag', tint, 40),
       h('span', { class: 'row-main' },

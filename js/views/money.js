@@ -3,13 +3,13 @@ import { h, icon, toast, fill, segmented, haptic, openPicker, dateButton } from 
 import { badge } from '../icons.js';
 import { store, uid } from '../store.js';
 import { CURRENCIES, CODES, fmt, toUSD, rateText, parseAmount } from '../money.js';
-import { relTime, currentMonth, monthLabel, longDate, hijriDate, daysUntil, daysText } from '../dates.js';
+import { relTime, currentMonth, monthLabel, longDate, hijriDate, daysUntil, daysText, shortDate } from '../dates.js';
 import { accountBalances, netWorth, debtRemaining, debtPaid } from '../calc.js';
-import { group, emptyState } from '../components.js';
+import { group, emptyState, bar } from '../components.js';
 import { openAccountForm, openTxForm, openRateForm, live } from '../forms.js';
 import { refreshRates } from '../rates.js';
 import { openDebtForm } from '../debts.js';
-import { computeZakat, zakatDueDate, refreshMetals, openMetalForm, openZakatPayForm, NISAB_GRAMS, KARATS, ZAKAT_RATE } from '../zakat.js';
+import { computeZakat, zakatDueDate, hawlStatus, refreshMetals, openMetalForm, openZakatPayForm, NISAB_GRAMS, KARATS, ZAKAT_RATE, LUNAR_YEAR_DAYS } from '../zakat.js';
 
 const CUR_TINT = { USD: 'mint', TRY: 'coral', SYP: 'gold' };
 
@@ -70,7 +70,7 @@ export function renderMoneyHub({ open }) {
   let zakatSub = 'احسب زكاتك من مالك وذهبك';
   let zakatEnd = null;
   if (!Z.priceMissing) {
-    if (Z.due > 0) { zakatSub = zDue ? `الحول ${daysUntil(zDue) >= 0 ? `بعد ${daysText(daysUntil(zDue))}` : 'مستحق'}` : 'فوق النصاب، حط تاريخ الحول'; zakatEnd = fmt(Z.due); }
+    if (Z.due > 0) { zakatSub = zDue ? `الحول ${daysUntil(zDue) >= 0 ? `بعد ${daysText(daysUntil(zDue))}` : 'مستحق'}` : 'فوق النصاب'; zakatEnd = fmt(Z.due); }
     else zakatSub = 'مالك أقل من النصاب هلّق';
   }
 
@@ -259,34 +259,92 @@ function nisabGroup(st) {
   ]);
 }
 
+// رسم صغير لمالك الزكوي مع خط النصاب
+function hawlSpark(series, nisab) {
+  if (series.length < 3) return null;
+  const step = Math.max(1, Math.ceil(series.length / 90));
+  const pts = series.filter((_, i) => i % step === 0 || i === series.length - 1);
+  const max = Math.max(nisab * 1.15, ...pts.map((p) => p.w));
+  const min = Math.min(0, ...pts.map((p) => p.w));
+  const W = 300;
+  const H = 64;
+  const y = (v) => (H - 4) - ((v - min) / (max - min || 1)) * (H - 8);
+  const x = (i) => (i / (pts.length - 1)) * W;
+  const NS = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(NS, 'svg');
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  svg.setAttribute('preserveAspectRatio', 'none');
+  svg.setAttribute('class', 'hawl-spark');
+  svg.setAttribute('aria-hidden', 'true');
+  const line = pts.map((p, i) => `${x(i).toFixed(1)},${y(p.w).toFixed(1)}`).join(' ');
+  svg.innerHTML = `<line x1="0" x2="${W}" y1="${y(nisab).toFixed(1)}" y2="${y(nisab).toFixed(1)}" class="nisab-line" vector-effect="non-scaling-stroke"/>
+    <polyline points="${line}" class="wealth-line" vector-effect="non-scaling-stroke"/>`;
+  return svg;
+}
+
 function hawlGroup(st) {
   const z = st.zakat;
-  const due = zakatDueDate(st);
-  const R = computeZakat(st);
-  const rows = [
-    h('div', { class: 'row-block' },
-      h('label', { class: 'field' },
-        h('span', { class: 'field-label' }, 'تاريخ آخر زكاة، أو اليوم اللي وصل فيه مالك للنصاب'),
-        dateButton({ value: z.lastDate || '', placeholder: 'اختار التاريخ', onChange: (v) => store.update((s) => { s.zakat.lastDate = v || null; }) }),
-        z.lastDate ? h('span', { class: 'field-hint' }, hijriDate(z.lastDate)) : null)),
-  ];
-  if (due) {
-    const left = daysUntil(due);
+  const H = hawlStatus(st);
+  const R = H.Z;
+  const rows = [];
+  if (!H.known) {
+    rows.push(h('p', { class: 'row-note' }, 'لازم سعر غرام الذهب أو الفضة مشان نعرف إيمتى وصل مالك للنصاب.'));
+  } else if (H.above && H.due) {
+    const left = daysUntil(H.due);
     let when;
     if (left > 0) when = `بعد ${daysText(left)}`;
     else if (left === 0) when = 'اليوم';
     else when = `مستحقة من ${daysText(-left)}`;
     rows.push(h('div', { class: 'row' },
       badge('calendar', 'gold', 40),
-      h('span', { class: 'row-main' }, h('span', { class: 'row-title' }, `الحول الجاي ${when}`), h('span', { class: 'row-sub wrap' }, `${longDate(due)} ${due.slice(0, 4)}، ${hijriDate(due)}`))));
+      h('span', { class: 'row-main' }, h('span', { class: 'row-title' }, `الحول الجاي ${when}`), h('span', { class: 'row-sub wrap' }, `${longDate(H.due)} ${H.due.slice(0, 4)}، ${hijriDate(H.due)}`))));
+    const elapsed = Math.max(0, Math.min(LUNAR_YEAR_DAYS, LUNAR_YEAR_DAYS - left));
+    let since;
+    if (H.reason === 'manual') since = `بلّش الحول ${shortDate(H.hawlStart)}، حسب التاريخ اللي حطيته.`;
+    else if (H.reason === 'fromStart') since = `مالك فوق النصاب من أول ما بلّشت تسجّل (${shortDate(H.start)}). إذا وصل للنصاب قبل هيك، حط التاريخ تحت.`;
+    else since = `مالك وصل للنصاب ${shortDate(H.hawlStart)}، ومن وقتها ما نزل تحته.`;
+    rows.push(h('div', { class: 'row-block' },
+      h('div', { class: 'hawl-meta' }, h('span', null, `مضى ${daysText(elapsed)}`), h('span', null, `من ${LUNAR_YEAR_DAYS} يوم`)),
+      bar(elapsed / LUNAR_YEAR_DAYS, 'gold'),
+      h('p', { class: 'field-hint' }, `${since} إذا نزل مالك تحت النصاب قبل الموعد، الحول بينلغى وبيبلّش من جديد لما يرجع يوصل.`)));
     if (R.due > 0) {
       rows.push(h('div', { class: 'row-actions' },
-        h('button', { class: 'btn gold small', type: 'button', onclick: () => openZakatPayForm(R.due, due) }, icon('check', 18), 'دفعت الزكاة'),
-        h('button', { class: 'btn secondary small', type: 'button', onclick: () => addToPlan(R.due, due) }, icon('plan', 18), 'ضيفها للخطة')));
+        h('button', { class: 'btn gold small', type: 'button', onclick: () => openZakatPayForm(R.due, H.due) }, icon('check', 18), 'دفعت الزكاة'),
+        h('button', { class: 'btn secondary small', type: 'button', onclick: () => addToPlan(R.due, H.due) }, icon('plan', 18), 'ضيفها للخطة')));
     }
   } else {
-    rows.push(h('p', { class: 'row-note' }, 'حط التاريخ مشان نحسب لك موعد الزكاة الجاية بالهجري، ونذكّرك قبلها.'));
+    rows.push(h('div', { class: 'row' },
+      badge('moon', 'slate', 40),
+      h('span', { class: 'row-main' },
+        h('span', { class: 'row-title' }, 'مالك تحت النصاب هلّق'),
+        h('span', { class: 'row-sub wrap' }, H.droppedOn
+          ? `نزل تحت النصاب ${shortDate(H.droppedOn)}، فانلغى الحول. أول ما يرجع يوصل، بيبلّش حول جديد لحاله.`
+          : 'أول ما يوصل مالك للنصاب، بيبلّش الحول لحاله.'))));
   }
+  if (H.manualVoided) rows.push(h('p', { class: 'row-note warn-note' }, `التاريخ اللي حطيته (${shortDate(z.lastDate)}) ما عاد بينحسب، لأن مالك نزل تحت النصاب بعده.`));
+  if (H.known) {
+    const spark = hawlSpark(H.series, R.nisab);
+    if (spark) {
+      rows.push(h('div', { class: 'row-block' }, spark,
+        h('div', { class: 'hawl-meta' }, h('span', null, shortDate(H.start)), h('span', { class: 'nisab-key' }, h('i'), 'النصاب'), h('span', null, 'اليوم'))));
+    }
+  }
+  rows.push(h('div', { class: 'row-block' },
+    h('div', { class: 'field' },
+      h('span', { class: 'field-label' }, 'بلّش الحول قبل ما تسجّل بالتطبيق؟ (اختياري)'),
+      h('div', { class: 'date-clear' },
+        dateButton({ value: z.lastDate || '', placeholder: 'منحسبه لحاله', onChange: (v) => store.update((s) => { s.zakat.lastDate = v || null; }) }),
+        z.lastDate ? h('button', {
+          class: 'btn secondary small', type: 'button',
+          onclick: () => {
+            const prev = z.lastDate;
+            store.update((s) => { s.zakat.lastDate = null; });
+            toast('انمسح التاريخ، وصار الحول تلقائي', { action: 'تراجع', onAction: () => store.update((s) => { s.zakat.lastDate = prev; }) });
+          },
+        }, icon('close', 16), 'امسح') : null),
+      h('span', { class: 'field-hint' }, z.lastDate
+        ? `${hijriDate(z.lastDate)}. إذا مسحته، منحسب الحول من مالك يوم بيوم.`
+        : 'حط تاريخ آخر زكاة دفعتها، أو اليوم اللي وصل فيه مالك للنصاب قبل ما تبلّش. غير هيك منحسبه لحاله.'))));
   return group('الحول', rows);
 }
 
