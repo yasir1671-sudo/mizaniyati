@@ -5,14 +5,16 @@ import { store, uid, PROTECTED_CATEGORIES } from './store.js';
 import { CURRENCIES, CODES, rateOf, toUSD, fromUSD, fmt, numText, parseAmount, roundTo } from './money.js';
 import { todayISO, currentMonth, addMonths, monthLabel, monthsText, txCountText } from './dates.js';
 import { refreshRates } from './rates.js';
-import { buildPlan, scheduleText, statusClass, goalMonthly } from './planner.js';
+import { buildPlan, scheduleText, statusClass, goalMonthly, itemUSD } from './planner.js';
+import { purchaseSuggestions, impact } from './advisor.js';
+import { suggestionCard } from './suggest.js';
 
 export const INCOME_KINDS = {
-  salary: { label: 'راتب', icon: 'briefcase', placeholder: 'مثلاً: راتب الشغل' },
-  stocks: { label: 'أسهم', icon: 'trend', placeholder: 'مثلاً: أرباح الأسهم' },
-  extra: { label: 'دخل إضافي', icon: 'toolbox', placeholder: 'مثلاً: شغل جانبي' },
-  debt: { label: 'دين إلي', icon: 'exchange', placeholder: 'مثلاً: دين عند فلان' },
-  other: { label: 'غير ذلك', icon: 'plusCircle', placeholder: 'اسم مصدر الدخل' },
+  salary: { label: 'راتب', icon: 'briefcase', tint: 'mint', placeholder: 'مثلاً: راتب الشغل' },
+  stocks: { label: 'أسهم', icon: 'trend', tint: 'blue', placeholder: 'مثلاً: أرباح الأسهم' },
+  extra: { label: 'دخل إضافي', icon: 'toolbox', tint: 'amber', placeholder: 'مثلاً: شغل جانبي' },
+  debt: { label: 'دين إلي', icon: 'exchange', tint: 'violet', placeholder: 'مثلاً: دين عند فلان' },
+  other: { label: 'غير ذلك', icon: 'plusCircle', tint: 'slate', placeholder: 'اسم مصدر الدخل' },
 };
 
 const TX_TYPES = [
@@ -370,15 +372,18 @@ export function openSourceForm(src = null) {
         dayButtonInline(p.day, (v) => { p.day = v; render(); }),
         h('input', { type: 'text', inputmode: 'decimal', value: p.amount, placeholder: 'المبلغ', 'aria-label': `مبلغ الدفعة ${i + 1}`, oninput: (e) => { p.amount = e.target.value; refreshTotal(); } }),
         d.parts.length > 2 ? h('button', { type: 'button', class: 'icon-btn ghost', 'aria-label': `احذف الدفعة ${i + 1}`, onclick: () => { d.parts.splice(i, 1); render(); } }, icon('close', 18)) : null)) : null;
+      // الديون صار إلها قسم لحالها (المال ← الديون)، منخبّي النوع القديم إلا إذا كان مستعمل
+      const kinds = Object.entries(INCOME_KINDS).filter(([id]) => id !== 'debt' || d.kind === 'debt');
       fill(body, [
         h('div', { class: 'field' }, h('span', { class: 'field-label' }, 'النوع'),
-          h('div', { class: 'chips', role: 'group', 'aria-label': 'نوع الدخل' },
-            // الديون صار إلها قسم لحالها (المال ← الديون)، منخبّي النوع القديم إلا إذا كان مستعمل
-            Object.entries(INCOME_KINDS).filter(([id]) => id !== 'debt' || d.kind === 'debt').map(([id, x]) => h('button', {
-              type: 'button', class: 'chip', 'aria-pressed': String(id === d.kind),
-              onclick: () => { d.kind = id; if (id === 'debt') d.schedule = 'once'; render(); },
-            }, icon(x.icon, 16), x.label)))),
-        field('الاسم', h('input', { type: 'text', value: d.name, placeholder: k.placeholder, oninput: (e) => { d.name = e.target.value; } })),
+          h('div', { class: 'kind-grid', role: 'group', 'aria-label': 'نوع الدخل', style: { '--n': String(kinds.length) } },
+            kinds.map(([id, x]) => h('button', {
+              type: 'button', class: 'cat-choice', 'aria-pressed': String(id === d.kind), style: { '--tint': tintHex(x.tint) },
+              onclick: () => { if (id !== d.kind) haptic('select'); d.kind = id; if (id === 'debt') d.schedule = 'once'; render(); },
+            }, badge(x.icon, x.tint, 46), h('span', null, x.label))))),
+        h('div', { class: 'name-row' },
+          badge(k.icon, k.tint, 52),
+          field('الاسم', h('input', { type: 'text', value: d.name, placeholder: k.placeholder, oninput: (e) => { d.name = e.target.value; } }))),
         d.split
           ? field('العملة', currencyPicker(d.currency, (v) => { d.currency = v; render(); }))
           : h('div', { class: 'two' },
@@ -463,7 +468,7 @@ export function openCategoryForm(cat = null, type = 'expense') {
   const d = {
     type: cat?.type || type, name: cat?.name || '', icon: cat?.icon || 'tag', tint: cat?.tint || 'mint',
     budget: cat?.budget ? cleanNum(cat.budget) : '', fixed: Boolean(cat?.fixed), private: Boolean(cat?.private),
-    aliases: (cat?.aliases || []).join('، '),
+    essential: Boolean(cat?.essential), aliases: (cat?.aliases || []).join('، '),
   };
   openSheet(editing ? 'تعديل الفئة' : 'فئة جديدة', (body, close) => {
     let err = null;
@@ -485,6 +490,7 @@ export function openCategoryForm(cat = null, type = 'expense') {
         d.type === 'expense' ? field('الميزانية الشهرية بالدولار', h('input', { type: 'text', inputmode: 'decimal', value: d.budget, placeholder: '0', oninput: (e) => { d.budget = e.target.value; } })) : null,
         h('div', { class: 'sheet-rows rows' },
           d.type === 'expense' ? switchRow('مصروف ثابت', 'متل الإيجار والفواتير. ما بيدخل بحساب مصروف اليوم.', d.fixed, (v) => { d.fixed = v; }) : null,
+          d.type === 'expense' ? switchRow('أساسي', 'متل المواصلات والبقالة: بينحجز مبلغه أول إذا المصاري قليلة، وما بنقترح تخفّفه. الثانوي (مطاعم، هدايا) بياخد من اللي بيبقى.', d.essential, (v) => { d.essential = v; }) : null,
           switchRow('اسم خاص', 'بيختفي الاسم والأيقونة بكل مكان، وبيطلع «خاص» بدالهم. المبلغ بيضل محسوب.', d.private, (v) => { d.private = v; })),
         field('كلمات بتدل عليها', h('input', { type: 'text', value: d.aliases, placeholder: 'مثلاً: كتاب، دورة، قرطاسية', oninput: (e) => { d.aliases = e.target.value; } }),
           'لما تكتب وحدة منها بالإدخال السريع، بتنحط العملية بهالفئة.'),
@@ -500,7 +506,7 @@ export function openCategoryForm(cat = null, type = 'expense') {
       const budget = d.type === 'expense' ? parseAmount(d.budget) : 0;
       const rec = {
         ...(cat || {}), id: cat?.id || uid('cat'), type: d.type, name, icon: d.icon, tint: d.tint, private: d.private,
-        budget: budget > 0 ? budget : 0, fixed: d.type === 'expense' && d.fixed,
+        budget: budget > 0 ? budget : 0, fixed: d.type === 'expense' && d.fixed, essential: d.type === 'expense' && d.essential,
         aliases: d.aliases.split(/[،,\s]+/).map((x) => x.trim()).filter(Boolean),
       };
       store.update((s) => upsert(s.categories, rec));
@@ -573,13 +579,17 @@ export function openRateForm(code) {
 const PRIORITY_OPTS = [{ value: 1, label: 'مهم' }, { value: 2, label: 'متوسط' }, { value: 3, label: 'بيستنى' }];
 const isMonth = (m) => /^\d{4}-\d{2}$/.test(m || '');
 
+const isDay = (s) => /^\d{4}-\d{2}-\d{2}$/.test(s || '');
+
 export function openItemForm(item = null, kind = 'want') {
   const editing = Boolean(item);
   const bought = item?.status === 'bought';
+  // التاريخ بيوم (5 كانون الأول). الأغراض القديمة كان إلها شهر بس، فبتطلع بأول الشهر لحتى تعدّلها
+  const oldMonth = item?.month && !item?.date ? `${item.month}-01` : '';
   const d = {
     kind: item?.kind || kind, name: item?.name || '', icon: item?.icon || (kind === 'commitment' ? 'pin' : 'bag'),
     amount: item ? cleanNum(item.amount) : '', currency: item?.currency || 'USD', priority: item?.priority || 2,
-    month: item?.month || (kind === 'commitment' ? addMonths(currentMonth(), 1) : ''), note: item?.note || '',
+    date: item?.date || oldMonth || (kind === 'commitment' ? `${addMonths(currentMonth(), 1)}-01` : ''), note: item?.note || '',
   };
   let title;
   if (editing) title = d.kind === 'commitment' ? 'تعديل الالتزام' : 'تعديل الغرض';
@@ -593,11 +603,12 @@ export function openItemForm(item = null, kind = 'want') {
       fill(body, [
         editing ? null : segmented([{ value: 'want', label: 'بدي اشتريه' }, { value: 'commitment', label: 'التزام لازم' }], d.kind, (v) => {
           d.kind = v;
-          if (v === 'commitment' && !d.month) d.month = addMonths(currentMonth(), 1);
+          if (v === 'commitment' && !d.date) d.date = `${addMonths(currentMonth(), 1)}-01`;
           if (d.icon === 'bag' || d.icon === 'pin') d.icon = v === 'commitment' ? 'pin' : 'bag';
           render();
         }, 'النوع'),
         s ? h('p', { class: `plan-status ${statusClass(s)}`.trim() }, scheduleText(item, s)) : null,
+        editing && !bought && d.kind === 'want' ? suggestBox(item, close) : null,
         h('div', { class: 'name-row' },
           badge(d.icon, d.kind === 'commitment' ? 'coral' : 'violet', 52),
           field('الاسم', h('input', {
@@ -614,13 +625,18 @@ export function openItemForm(item = null, kind = 'want') {
             segmented(PRIORITY_OPTS, d.priority, (v) => { d.priority = v; render(); }, 'الأولوية'))
           : null,
         d.kind === 'want'
-          ? field('بدي ياه قبل (اختياري)', dateButton({ value: d.month, mode: 'month', placeholder: 'بلا موعد', allowEmpty: true, onChange: (v) => { d.month = v; render(); } }),
-            'إذا ما في موعد خليه فاضي، وبينحط بأول شهر بيكفيه فيه الفائض.')
-          : field('بأي شهر لازم تدفعه؟', dateButton({ value: d.month, mode: 'month', onChange: (v) => { d.month = v; render(); } }),
-            'الالتزام بينخصم من فائض شهره قبل أي غرض تاني.'),
+          ? field('إيمتى بدك ياه؟ (اختياري)', dateButton({ value: d.date, future: true, placeholder: 'بلا موعد', allowEmpty: true, title: 'إيمتى بدك ياه؟', onChange: (v) => { d.date = v; render(); } }),
+            'متل 5 كانون الأول. إذا ما في موعد خليه فاضي، وبينحط بأول شهر بيكفيه فيه الفائض.')
+          : field('إيمتى لازم تدفعه؟', dateButton({ value: d.date, future: true, title: 'موعد الدفع', onChange: (v) => { d.date = v; render(); } }),
+            'الالتزام بينحجز من مصاري شهره قبل أي غرض تاني، وبيطلع بخريطة الشهر بيومه.'),
         field('ملاحظة', h('input', { type: 'text', value: d.note, placeholder: 'اختياري', oninput: (e) => { d.note = e.target.value; } })),
         err,
         h('button', { class: 'btn block', type: 'button', onclick: save }, 'حفظ'),
+        editing && !bought && d.kind === 'want'
+          ? (item.confirmed
+            ? h('button', { class: 'btn secondary block', type: 'button', onclick: unconfirm }, icon('close', 18), 'فك التثبيت')
+            : h('button', { class: 'btn gold block', type: 'button', onclick: () => { close(); setTimeout(() => openConfirmForm(item), 320); } }, icon('pin', 18), 'ثبّت الشراء'))
+          : null,
         editing && !bought
           ? h('button', { class: 'btn violet block', type: 'button', onclick: () => { close(); setTimeout(() => openBoughtForm(item), 320); } },
             d.kind === 'commitment' ? 'دفعته' : 'اشتريته')
@@ -635,16 +651,23 @@ export function openItemForm(item = null, kind = 'want') {
       const amount = parseAmount(d.amount);
       if (!name) { err.textContent = 'اكتب الاسم.'; return; }
       if (!(amount > 0)) { err.textContent = 'اكتب المبلغ.'; return; }
-      if (d.kind === 'commitment' && !isMonth(d.month)) { err.textContent = 'اختار الشهر.'; return; }
+      if (d.kind === 'commitment' && !isDay(d.date)) { err.textContent = 'اختار موعد الدفع.'; return; }
+      if (d.kind === 'want' && item?.confirmed && !isDay(d.date)) { err.textContent = 'الغرض المثبّت بدو تاريخ. اختاره أو فك التثبيت.'; return; }
       const rec = {
         ...(item || {}), id: item?.id || uid('item'), kind: d.kind, name, icon: d.icon, amount, currency: d.currency,
-        priority: d.kind === 'want' ? d.priority : null, month: isMonth(d.month) ? d.month : null,
-        note: d.note.trim(), status: item?.status || 'planned', createdAt: item?.createdAt || Date.now(),
+        priority: d.kind === 'want' ? d.priority : null, date: isDay(d.date) ? d.date : null, month: isDay(d.date) ? d.date.slice(0, 7) : null,
+        note: d.note.trim(), status: item?.status || 'planned', createdAt: item?.createdAt || Date.now(), confirmed: Boolean(item?.confirmed),
       };
       store.update((s) => upsert(s.planItems, rec));
       close();
       const s = buildPlan(store.state).schedule.get(rec.id);
       toast(s && rec.status !== 'bought' ? scheduleText(rec, s) : 'انحفظ');
+    }
+
+    function unconfirm() {
+      store.update((s) => { const it = s.planItems.find((i) => i.id === item.id); if (it) it.confirmed = false; });
+      close();
+      toast('انفك التثبيت، ورجع المبلغ للخطة', { action: 'تراجع', onAction: () => store.update((s) => { const it = s.planItems.find((i) => i.id === item.id); if (it) it.confirmed = true; }) });
     }
 
     async function unbuy() {
@@ -672,6 +695,86 @@ export function openItemForm(item = null, kind = 'want') {
 
     render();
   });
+}
+
+/* ---------- اقتراح جوّا نموذج الغرض: كيف بيلحق موعده أو بيصير أبكر ---------- */
+function suggestBox(item, close) {
+  const box = h('div', { class: 'sg-slot' });
+  // الحساب بعد ما تنفتح الورقة مشان ما تتأخر
+  setTimeout(() => {
+    const list = purchaseSuggestions(store.state, { onlyId: item.id, limit: 1 });
+    if (!list.length) { box.remove(); return; }
+    const card = suggestionCard(list[0]);
+    card.querySelector('.sg-actions .btn')?.addEventListener('click', () => close());
+    box.replaceChildren(card);
+  }, 60);
+  return box;
+}
+
+/* ---------- ثبّت الشراء: بيحجز المبلغ بتاريخه، وما بينسجل مصروف لحتى تشتريه ---------- */
+export function openConfirmForm(item) {
+  const st = store.state;
+  const P = buildPlan(st);
+  const s = P.schedule.get(item.id);
+  const today = todayISO();
+  let date = item.date;
+  if (!date) date = s?.month && s.month > currentMonth() ? `${s.month}-01` : today;
+  if (date < today) date = today;
+  openSheet(`ثبّت «${item.name}»`, (body, close) => {
+    const preview = h('div', { class: 'result', 'aria-live': 'polite' });
+    function nextState() {
+      const s0 = store.state;
+      return { ...s0, planItems: s0.planItems.map((i) => (i.id === item.id ? { ...i, confirmed: true, date, month: date.slice(0, 7) } : i)) };
+    }
+    function render() {
+      fill(body, [
+        h('p', { class: 'hint' }, 'التثبيت بيحجز المبلغ من مصاري شهره متل الالتزام، فما بينصرف على شي تاني. ما بينسجل مصروف لحتى تضغط «اشتريته».'),
+        field('إيمتى رح تشتريه؟', dateButton({ value: date, future: true, title: 'يوم الشراء', onChange: (v) => { date = v; render(); } })),
+        preview,
+        h('button', { class: 'btn gold block', type: 'button', onclick: save }, icon('pin', 18), 'ثبّت'),
+      ]);
+      const I = impact(store.state, nextState());
+      const lines = [];
+      const usd = itemUSD(store.state, item);
+      if (date.slice(0, 7) === currentMonth()) {
+        lines.push(beforeAfter('مصروف اليوم', I.a0.perDay, I.a1.perDay), beforeAfter('بيبقى لآخر الشهر', I.c0.pool, I.c1.pool));
+        if (I.c1.pool < -0.5) lines.push(h('p', { class: 'result-line bad' }, `المصاري اللي معك ما بتكفي: ناقصك ${fmt(-I.c1.pool)} لآخر الشهر.`));
+      } else {
+        lines.push(h('p', { class: 'result-line' }, `بينحجز ${fmt(usd)} من خطة ${monthLabel(date.slice(0, 7))}.`));
+      }
+      const neg = I.P1.rows.find((r, i) => r.balance < -0.5 && I.P0.rows[i].balance >= -0.5);
+      if (neg) lines.push(h('p', { class: 'result-line bad' }, `خطتك بتصير بالسالب بـ ${monthLabel(neg.month)} (${fmt(neg.balance)}). يعني ما في مصاري كفاية لهالموعد، فكّر تأجّله.`));
+      for (const x of I.delayed) {
+        lines.push(h('p', { class: `result-line ${x.to ? 'warn' : 'bad'}` }, x.to ? `«${x.it.name}» بيتأخر من ${monthLabel(x.from, { year: false })} لـ ${monthLabel(x.to, { year: false })}.` : `«${x.it.name}» ما عاد بيلحق خلال السنة.`));
+      }
+      fill(preview, lines);
+    }
+    function save() {
+      if (!isDay(date)) return;
+      store.update((x) => {
+        const it = x.planItems.find((i) => i.id === item.id);
+        if (it) Object.assign(it, { confirmed: true, date, month: date.slice(0, 7) });
+      });
+      close();
+      haptic('success');
+      toast(`تثبّت «${item.name}»، ومبلغه محجوز`, {
+        action: 'تراجع', onAction: () => store.update((x) => { const it = x.planItems.find((i) => i.id === item.id); if (it) it.confirmed = false; }),
+      });
+    }
+    render();
+  });
+}
+
+// سطر «قبل ← بعد»
+export function beforeAfter(label, before, after, { good = 'up' } = {}) {
+  const diff = after - before;
+  const worse = good === 'up' ? diff < -0.5 : diff > 0.5;
+  return h('div', { class: 'ba-row' },
+    h('span', { class: 'ba-label' }, label),
+    h('span', { class: 'ba-vals' },
+      Math.abs(diff) > 0.5 ? h('s', null, fmt(before)) : null,
+      Math.abs(diff) > 0.5 ? icon('chevL', 14) : null,
+      h('b', { class: worse ? (after < 0 ? 'bad' : 'warn') : '' }, fmt(after))));
 }
 
 /* ---------- اشتريته / دفعته ---------- */
@@ -774,158 +877,4 @@ export function openBoughtForm(item) {
   });
 }
 
-/* ---------- هدف ادخار ---------- */
-export function openGoalForm(goal = null, preset = {}) {
-  const editing = Boolean(goal);
-  const d = {
-    name: goal?.name ?? preset.name ?? '', icon: goal?.icon || preset.icon || 'target',
-    target: goal ? cleanNum(goal.target) : preset.target ? cleanNum(Math.round(preset.target)) : '',
-    saved: goal ? cleanNum(goal.saved || 0) : '', deadline: goal?.deadline || preset.deadline || addMonths(currentMonth(), 11),
-    kind: goal?.kind || preset.kind || 'goal',
-  };
-  openSheet(editing ? 'تعديل الهدف' : 'هدف جديد', (body, close) => {
-    let err = null;
-    let hint = null;
 
-    function render() {
-      err = h('p', { class: 'form-error', role: 'alert' });
-      hint = h('p', { class: 'plan-status' });
-      fill(body, [
-        h('div', { class: 'name-row' },
-          badge(d.icon, 'gold', 52),
-          field('اسم الهدف', h('input', { type: 'text', value: d.name, placeholder: 'مثلاً: سيارة، عمرة، دفعة بيت', oninput: (e) => { d.name = e.target.value; } }))),
-        h('div', { class: 'field' }, h('span', { class: 'field-label' }, 'الأيقونة'),
-          iconPicker(GOAL_ICON_CHOICES, d.icon, (name) => { d.icon = name; render(); }, tintHex('gold'))),
-        h('div', { class: 'two' },
-          field('المبلغ المطلوب بالدولار', h('input', { type: 'text', inputmode: 'decimal', value: d.target, placeholder: '0', oninput: (e) => { d.target = e.target.value; refreshHint(); } })),
-          field('جمعت لهلّق', h('input', { type: 'text', inputmode: 'decimal', value: d.saved, placeholder: '0', oninput: (e) => { d.saved = e.target.value; refreshHint(); } }))),
-        field('لإيمتى؟', dateButton({ value: d.deadline, mode: 'month', onChange: (v) => { d.deadline = v; render(); } })),
-        hint,
-        err,
-        h('button', { class: 'btn block', type: 'button', onclick: save }, 'حفظ الهدف'),
-        editing ? h('button', { class: 'btn danger block', type: 'button', onclick: remove }, 'حذف الهدف') : null,
-      ]);
-      refreshHint();
-    }
-
-    function refreshHint() {
-      const target = parseAmount(d.target);
-      if (!(target > 0) || !isMonth(d.deadline)) { hint.textContent = ''; return; }
-      const g = goalMonthly({ target, saved: parseAmount(d.saved) || 0, deadline: d.deadline });
-      if (g.done) hint.textContent = 'الهدف مكتمل.';
-      else if (g.overdue) hint.textContent = 'الموعد فات. اختار شهر جاي.';
-      else hint.textContent = `يعني لازم تشيل ${fmt(g.monthly)} بالشهر لمدة ${monthsText(g.monthsLeft)}.`;
-    }
-
-    function save() {
-      const target = parseAmount(d.target);
-      const saved = parseAmount(d.saved) || 0;
-      if (!(target > 0)) { err.textContent = 'اكتب المبلغ المطلوب.'; return; }
-      if (!isMonth(d.deadline)) { err.textContent = 'اختار الموعد.'; return; }
-      const rec = {
-        ...(goal || {}), id: goal?.id || uid('goal'), name: d.name.trim() || 'هدف', icon: d.icon,
-        target, saved: saved > 0 ? saved : 0, deadline: d.deadline, kind: d.kind, createdAt: goal?.createdAt || Date.now(),
-      };
-      store.update((s) => upsert(s.goals, rec));
-      close();
-      toast('انحفظ الهدف');
-    }
-
-    async function remove() {
-      const ok = await confirmSheet('حذف الهدف؟', `رح ينحذف هدف «${goal.name}».`, 'احذف');
-      if (!ok) return;
-      store.update((s) => { s.goals = s.goals.filter((g) => g.id !== goal.id); });
-      close();
-      toast('انحذف الهدف');
-    }
-
-    render();
-  });
-}
-
-export function openDepositForm(goal) {
-  let value = '';
-  openSheet(`إضافة لـ «${goal.name}»`, (body, close) => {
-    const err = h('p', { class: 'form-error', role: 'alert' });
-    fill(body, [
-      h('div', { class: 'amount-wrap' },
-        h('span', { class: 'amount-cur' }, '$'),
-        h('input', { class: 'amount-input', type: 'text', inputmode: 'decimal', placeholder: '0', 'data-autofocus': true, 'aria-label': 'المبلغ بالدولار', oninput: (e) => { value = e.target.value; } })),
-      h('p', { class: 'hint' }, `جمعت لهلّق ${fmt(goal.saved || 0)} من ${fmt(goal.target)}.`),
-      err,
-      h('button', { class: 'btn block', type: 'button', onclick: save }, 'أضف للهدف'),
-    ]);
-    function save() {
-      const n = parseAmount(value);
-      if (!(n > 0)) { err.textContent = 'اكتب المبلغ.'; return; }
-      store.update((s) => {
-        const g = s.goals.find((x) => x.id === goal.id);
-        if (g) g.saved = (Number(g.saved) || 0) + n;
-      });
-      close();
-      toast(`انضاف ${fmt(n)} لـ «${goal.name}»`);
-    }
-  });
-}
-
-/* ---------- شو لو؟ ---------- */
-export function openWhatIf() {
-  const d = { name: '', amount: '', currency: 'USD', month: currentMonth() };
-  openSheet('شو لو؟', (body, close) => {
-    const result = h('div', { class: 'result', 'aria-live': 'polite' });
-    fill(body, [
-      h('p', { class: 'hint' }, 'جرّب مصروف كبير قبل ما تعمله، وشوف شو بيصير بخطتك.'),
-      field('شو بدك تشتري؟', h('input', { type: 'text', placeholder: 'مثلاً: موبايل جديد', oninput: (e) => { d.name = e.target.value; } })),
-      h('div', { class: 'two' },
-        field('المبلغ', h('input', { type: 'text', inputmode: 'decimal', placeholder: '0', 'data-autofocus': true, oninput: (e) => { d.amount = e.target.value; } })),
-        field('العملة', live((refresh) => currencyPicker(d.currency, (v) => { d.currency = v; refresh(); })))),
-      field('بأي شهر؟', live((refresh) => dateButton({ value: d.month, mode: 'month', onChange: (v) => { d.month = v; refresh(); } }))),
-      h('button', { class: 'btn block', type: 'button', onclick: calc }, 'احسب'),
-      result,
-    ]);
-
-    function calc() {
-      const st = store.state;
-      const amount = parseAmount(d.amount);
-      if (!(amount > 0)) { fill(result, [h('p', { class: 'form-error' }, 'اكتب المبلغ.')]); return; }
-      if (!Number.isFinite(toUSD(st, amount, d.currency))) { fill(result, [h('p', { class: 'form-error' }, `حدد سعر ${CURRENCIES[d.currency].name} أول.`)]); return; }
-      const probe = {
-        id: '__whatif', kind: 'commitment', name: d.name.trim() || 'المصروف', amount, currency: d.currency,
-        month: isMonth(d.month) ? d.month : currentMonth(), status: 'planned',
-      };
-      const base = buildPlan(st);
-      const alt = buildPlan(st, { extra: [probe] });
-      const lines = [];
-      const neg = alt.rows.find((r) => r.balance < -0.5);
-      if (neg && !base.rows.some((r) => r.balance < -0.5)) {
-        lines.push(['bad', `رصيد خطتك بيصير بالسالب بـ ${monthLabel(neg.month)} (${fmt(neg.balance)}).`]);
-      }
-      for (const it of st.planItems) {
-        if (it.kind !== 'want' || it.status === 'bought') continue;
-        const a = base.schedule.get(it.id);
-        const b = alt.schedule.get(it.id);
-        if (!a?.month || !b) continue;
-        if (b.status === 'beyond') lines.push(['bad', `«${it.name}» ما عاد بيلحق خلال السنة.`]);
-        else if (b.month > a.month) lines.push(['warn', `«${it.name}» بيتأخر من ${monthLabel(a.month)} لـ ${monthLabel(b.month)}.`]);
-      }
-      if (!lines.length) lines.push(['good', 'ما بيأخّر ولا شي من مشترياتك.']);
-      lines.push(['', `الفائض الحر آخر السنة بيصير ${fmt(alt.endBalance)} بدل ${fmt(base.endBalance)}.`]);
-
-      const add = (kind) => {
-        store.update((s) => s.planItems.push({
-          id: uid('item'), kind, name: probe.name, icon: kind === 'commitment' ? 'pin' : 'bag', amount, currency: d.currency,
-          priority: kind === 'want' ? 2 : null, month: kind === 'commitment' ? probe.month : null, note: '',
-          status: 'planned', createdAt: Date.now(),
-        }));
-        close();
-        toast('انضاف للخطة');
-      };
-      fill(result, [
-        lines.map(([cls, text]) => h('p', { class: `result-line ${cls}`.trim() }, text)),
-        h('div', { class: 'two' },
-          h('button', { class: 'btn secondary', type: 'button', onclick: () => add('want') }, 'ضيفه للمشتريات'),
-          h('button', { class: 'btn secondary', type: 'button', onclick: () => add('commitment') }, 'ضيفه كالتزام')),
-      ]);
-    }
-  });
-}

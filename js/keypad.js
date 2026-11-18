@@ -4,6 +4,7 @@ import { badge } from './icons.js';
 import { store, uid, catLabel } from './store.js';
 import { CURRENCIES, fmt, fmtNumber, rateOf, fromUSD } from './money.js';
 import { debtRemaining } from './calc.js';
+import { creditGoalForDebt, uncreditGoal } from './planner.js';
 import { todayISO, dayLabel } from './dates.js';
 import { openTxForm, accountOpts } from './forms.js';
 
@@ -207,9 +208,12 @@ export function openAddSheet(prefill = {}) {
       const paymentId = uid('pay');
       const txId = uid('tx');
       const theyOwe = debt.direction === 'theyOwe';
+      let credit = null;
       store.update((x) => {
         const dd = x.debts.find((k) => k.id === debt.id);
-        dd.payments = [...(dd.payments || []), { id: paymentId, amount: Math.min(rem, Math.round(debtAmt * 100) / 100), date: d.date, txId }];
+        // الدين المربوط بهدف: اللي رجع بينضاف للهدف لحاله
+        if (theyOwe) credit = creditGoalForDebt(x, debt.id, usd);
+        dd.payments = [...(dd.payments || []), { id: paymentId, amount: Math.min(rem, Math.round(debtAmt * 100) / 100), date: d.date, txId, ...(credit ? { goalCredit: credit } : {}) }];
         x.transactions.push({
           id: txId, type: 'debt', debtId: debt.id, paymentId, flow: theyOwe ? 'in' : 'out',
           accountId: d.accountId, amount, usd, date: d.date, note: d.note.trim() || debt.person, createdAt: Date.now(),
@@ -218,12 +222,14 @@ export function openAddSheet(prefill = {}) {
       close();
       haptic('success');
       const left = rem - debtAmt;
-      toast(left < 0.5 ? `خلص دين ${debt.person}` : `${theyOwe ? `رجّعلك ${debt.person}` : `سددت لـ ${debt.person}`} ${fmt(amount, cur)}. الباقي ${fmt(left, debt.currency)}`, {
+      const msg = left < 0.5 ? `خلص دين ${debt.person}` : `${theyOwe ? `رجّعلك ${debt.person}` : `سددت لـ ${debt.person}`} ${fmt(amount, cur)}. الباقي ${fmt(left, debt.currency)}`;
+      toast(credit ? `${msg}. وانضاف لهدف «${credit.name}»` : msg, {
         action: 'تراجع',
         onAction: () => store.update((x) => {
           const dd = x.debts.find((k) => k.id === debt.id);
           if (dd) dd.payments = (dd.payments || []).filter((p) => p.id !== paymentId);
           x.transactions = x.transactions.filter((t) => t.id !== txId);
+          if (credit) uncreditGoal(x, credit);
         }),
       });
     }

@@ -1,7 +1,7 @@
 // كل الحسابات: الأرصدة، إحصاءات الشهر، الخطة، ومصروف اليوم
 import { toUSD } from './money.js';
 import { daysInMonth, parseISO } from './dates.js';
-import { incomeStatus } from './income.js';
+import { incomeStatus, recurringStatus } from './income.js';
 
 export function sortTx(list) {
   return [...list].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : (b.createdAt || 0) - (a.createdAt || 0)));
@@ -76,12 +76,23 @@ export function expectedIncome(state, key) {
   return { usd, missing: [...missing] };
 }
 
-export function budgetTotals(state) {
+// ميزانية الفئة بشهر معيّن: الاستثنائية لهالشهر إذا في، وإلا الأصلية
+export function monthOverride(state, key) {
+  const o = key ? state.settings.monthBudgets?.[key] : null;
+  return o && typeof o === 'object' ? o : null;
+}
+export function budgetFor(state, c, key) {
+  const o = monthOverride(state, key);
+  if (o && o[c.id] != null) return Math.max(0, Number(o[c.id]) || 0);
+  return Number(c.budget) || 0;
+}
+
+export function budgetTotals(state, key = null) {
   let fixed = 0;
   let flex = 0;
   for (const c of state.categories) {
     if (c.type !== 'expense') continue;
-    const b = Number(c.budget) || 0;
+    const b = budgetFor(state, c, key);
     if (c.fixed) fixed += b; else flex += b;
   }
   return { fixed, flex, total: fixed + flex };
@@ -90,8 +101,49 @@ export function budgetTotals(state) {
 export function plan(state, key) {
   const income = expectedIncome(state, key).usd;
   const savings = savingsFor(state, key);
-  const { fixed, flex, total } = budgetTotals(state);
+  const { fixed, flex, total } = budgetTotals(state, key);
   return { income, savings, fixed, flex, total, free: income - savings - total };
+}
+
+// الأغراض المثبّتة بتنحجز متل الالتزام بشهرها (date بيوم، أو month بس)
+export function itemMonth(it) {
+  return (it.date && it.date.slice(0, 7)) || it.month || null;
+}
+export function isReserved(it) {
+  return it.status !== 'bought' && (it.kind === 'commitment' || (it.kind === 'want' && it.confirmed));
+}
+
+// الديون المربوطة بهدف ما بتنحسب دخل للمعيشة: مصاريها رايحة للهدف
+export function linkedDebtIds(state) {
+  const set = new Set();
+  for (const g of state.goals || []) for (const id of g.linkedDebtIds || []) set.add(id);
+  return set;
+}
+
+/*
+ * الفواتير الثابتة الباقية هالشهر: الاشتراكات اللي ما اندفعت (بمواعيدها)،
+ * أو باقي ميزانية الفئة الثابتة إذا أكبر. الاشتراك «المدفوع من قبل» بينحسب كأنه انصرف.
+ */
+export function billsLeft(state, today) {
+  const key = today.slice(0, 7);
+  const ms = monthStats(state, key);
+  const recs = recurringStatus(state, today);
+  const items = [];
+  let total = 0;
+  for (const c of state.categories) {
+    if (c.type !== 'expense' || !c.fixed) continue;
+    const mine = recs.filter((x) => x.r.categoryId === c.id);
+    const unpaid = mine.filter((x) => !x.paid);
+    const unpaidUSD = unpaid.reduce((s, x) => s + x.usd, 0);
+    const prepaidUSD = mine.filter((x) => x.prepaid).reduce((s, x) => s + x.usd, 0);
+    const spent = ms.byCat.get(c.id) || 0;
+    const fromBudget = Math.max(0, budgetFor(state, c, key) - spent - prepaidUSD);
+    const left = Math.max(unpaidUSD, fromBudget);
+    for (const x of unpaid) items.push({ kind: 'bill', name: x.r.name, usd: x.usd, day: x.dueDay, rec: x.r, cat: c });
+    if (left - unpaidUSD > 0.5) items.push({ kind: 'billBudget', name: c.name, usd: left - unpaidUSD, day: null, cat: c });
+    total += left;
+  }
+  return { total, items };
 }
 
 // مصروف اليوم = (ميزانية المصروف اليومي − اللي انصرف قبل اليوم) ÷ الأيام الباقية، ناقص مصروف اليوم
@@ -164,27 +216,33 @@ export function cashMonth(state, today) {
     if (a.savings) savingsHeld += u; else spendable += u;
   }
   const inc = incomeStatus(state, key);
+  const linked = linkedDebtIds(state);
   let debtIn = 0;
   let debtOut = 0;
+  const debtsDue = [];
   for (const d of state.debts) {
     if (!d.due || d.due > key) continue;
     const r = debtRemaining(d);
     if (r < 0.005) continue;
     const u = toUSD(state, r, d.currency);
     if (!Number.isFinite(u)) continue;
-    if (d.direction === 'theyOwe') debtIn += u; else debtOut += u;
+    if (d.direction === 'theyOwe') {
+      if (linked.has(d.id)) continue;
+      debtIn += u;
+    } else debtOut += u;
+    debtsDue.push({ debt: d, usd: u });
   }
-  const ms = monthStats(state, key);
-  let bills = 0;
-  for (const c of state.categories) {
-    if (c.type !== 'expense' || !c.fixed) continue;
-    bills += Math.max(0, (Number(c.budget) || 0) - (ms.byCat.get(c.id) || 0));
-  }
+  const B = billsLeft(state, today);
+  const bills = B.total;
   let commits = 0;
+  const reserved = [];
   for (const it of state.planItems) {
-    if (it.kind !== 'commitment' || it.status === 'bought' || !it.month || it.month > key) continue;
+    const m = itemMonth(it);
+    if (!isReserved(it) || !m || m > key) continue;
     const u = toUSD(state, Number(it.amount) || 0, it.currency);
-    if (Number.isFinite(u)) commits += u;
+    if (!Number.isFinite(u)) continue;
+    commits += u;
+    reserved.push({ it, usd: u });
   }
   const savingIds = new Set(state.accounts.filter((a) => a.savings).map((a) => a.id));
   let saved = 0;
@@ -200,5 +258,6 @@ export function cashMonth(state, today) {
   return {
     key, spendable, savingsHeld, coming, incomeComing: inc.comingUSD, debtIn, bills, commits, debtOut,
     savingsLeft, saved, pool, settled: inc.settled, missing: [...missing],
+    billItems: B.items, reserved, debtsDue, income: inc,
   };
 }

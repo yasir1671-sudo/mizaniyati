@@ -44,6 +44,12 @@ export function longDate(s) {
   const d = parseISO(s);
   return `${WEEKDAYS[d.getDay()]} ${d.getDate()} ${MONTHS[d.getMonth()]}`;
 }
+// «5 كانون الأول» (ومع السنة إذا مو هالسنة)
+export function shortDate(s) {
+  const d = parseISO(s);
+  const base = `${d.getDate()} ${MONTHS[d.getMonth()]}`;
+  return d.getFullYear() === new Date().getFullYear() ? base : `${base} ${d.getFullYear()}`;
+}
 export function dayLabel(s) {
   if (s === todayISO()) return 'اليوم';
   const y = new Date();

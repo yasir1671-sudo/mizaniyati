@@ -5,6 +5,7 @@ import { store, uid } from './store.js';
 import { CURRENCIES, CODES, fmt, parseAmount, toUSD } from './money.js';
 import { todayISO, dayLabel } from './dates.js';
 import { debtPaid, debtRemaining } from './calc.js';
+import { creditGoalForDebt, uncreditGoal } from './planner.js';
 
 const cleanNum = (n) => String(+Number(n).toPrecision(8));
 const isMonth = (m) => /^\d{4}-\d{2}$/.test(m || '');
@@ -162,6 +163,7 @@ function paymentsList(debt, close) {
             const x = s.debts.find((k) => k.id === debt.id);
             if (x) x.payments = x.payments.filter((k) => k.id !== p.id);
             s.transactions = s.transactions.filter((t) => t.id !== p.txId);
+            if (p.goalCredit) uncreditGoal(s, p.goalCredit);
           });
           toast('انحذفت الدفعة');
         },
@@ -172,8 +174,11 @@ function paymentsList(debt, close) {
 export function openPaymentForm(debt) {
   const rem = debtRemaining(debt);
   const accs = sameCurrencyAccounts(debt.currency);
-  const d = { amount: cleanNum(rem), date: todayISO(), accountId: accs[0]?.id || '' };
   const theyOwe = debt.direction === 'theyOwe';
+  // دين مربوط بهدف: المصاري بتروح لمحفظة ادخار إذا في (مشان ما تنصرف)
+  const goal = theyOwe ? store.state.goals.find((g) => (g.linkedDebtIds || []).includes(debt.id)) : null;
+  const saveAcc = goal ? accs.find((a) => a.savings) : null;
+  const d = { amount: cleanNum(rem), date: todayISO(), accountId: (saveAcc || accs.find((a) => !a.savings) || accs[0])?.id || '' };
   openSheet(theyOwe ? `رجّعلي ${debt.person}` : `سددت لـ ${debt.person}`, (body, close) => {
     const err = h('p', { class: 'form-error', role: 'alert' });
     const c = CURRENCIES[debt.currency];
@@ -184,6 +189,7 @@ export function openPaymentForm(debt) {
     const sym = h('span', { class: 'amount-cur' }, c.symbol);
     fill(body, [
       h('p', { class: 'hint' }, `الباقي ${fmt(rem, debt.currency)}.`),
+      goal ? h('p', { class: 'plan-status good' }, `هالدين مربوط بهدف «${goal.name}»: اللي بيرجع بينضاف للهدف لحاله.${saveAcc ? '' : ' حطه بمحفظة ادخار مشان ما ينصرف.'}`) : null,
       h('div', { class: 'amount-wrap' }, c.prefix ? [sym, amountInput] : [amountInput, sym]),
       field(theyOwe ? 'دخلت المصاري على' : 'طلعت المصاري من', live((refresh) => selectButton({
         value: d.accountId, title: 'المحفظة',
@@ -203,20 +209,24 @@ export function openPaymentForm(debt) {
       const st = store.state;
       const paymentId = uid('pay');
       const txId = d.accountId ? uid('tx') : null;
+      let credit = null;
       store.update((s) => {
         const x = s.debts.find((k) => k.id === debt.id);
         if (!x) return;
-        x.payments = [...(x.payments || []), { id: paymentId, amount, date: d.date, txId }];
+        const usd = toUSDorNull(st, amount, debt.currency);
+        if (theyOwe && usd) credit = creditGoalForDebt(s, debt.id, usd);
+        x.payments = [...(x.payments || []), { id: paymentId, amount, date: d.date, txId, ...(credit ? { goalCredit: credit } : {}) }];
         if (txId) {
           s.transactions.push({
             id: txId, type: 'debt', debtId: debt.id, paymentId, flow: theyOwe ? 'in' : 'out',
-            accountId: d.accountId, amount, usd: toUSDorNull(st, amount, debt.currency), date: d.date, note: debt.person, createdAt: Date.now(),
+            accountId: d.accountId, amount, usd, date: d.date, note: debt.person, createdAt: Date.now(),
           });
         }
       });
       close();
       const left = rem - amount;
-      toast(left < 0.005 ? 'خلص الدين' : `انسجلت الدفعة. الباقي ${fmt(left, debt.currency)}`);
+      const base = left < 0.005 ? 'خلص الدين' : `انسجلت الدفعة. الباقي ${fmt(left, debt.currency)}`;
+      toast(credit ? `${base}. وانضاف ${fmt(credit.usd)} لهدف «${credit.name}»` : base);
     }
   });
 }

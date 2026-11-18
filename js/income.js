@@ -63,9 +63,22 @@ export function recurringStatus(state, today = todayISO()) {
   const dismissed = state.settings.dismissed || {};
   return (state.recurring || []).filter((r) => r.active !== false).map((r) => {
     const dueDay = Math.min(Number(r.day) || 1, dim);
-    const paid = state.transactions.some((t) => t.recurringId === r.id && t.date.startsWith(key));
+    const tx = state.transactions.find((t) => t.recurringId === r.id && t.date.startsWith(key));
+    // «كان مدفوع من قبل»: انعلّم مدفوع لهالشهر بلا ما ينسجل مصروف
+    const prepaid = !tx && (r.paidMonths || []).includes(key);
+    const paid = Boolean(tx) || prepaid;
     const isDismissed = Boolean(dismissed[`rec:${r.id}:${key}`]);
     const diff = dueDay - day;
-    return { r, dueDay, paid, dismissed: isDismissed, diff, show: !paid && !isDismissed && diff <= 1 };
+    const usd = toUSD(state, Number(r.amount) || 0, r.currency);
+    return { r, dueDay, paid, prepaid, tx: tx || null, usd: Number.isFinite(usd) ? usd : 0, dismissed: isDismissed, diff, show: !paid && !isDismissed && diff <= 1 };
   });
+}
+
+// تعليم الاشتراك «مدفوع» أو «مو مدفوع» لشهر معيّن (بلا مصروف)
+export function setPrepaid(s, recId, key, on) {
+  const r = (s.recurring || []).find((x) => x.id === recId);
+  if (!r) return;
+  const set = new Set(r.paidMonths || []);
+  if (on) set.add(key); else set.delete(key);
+  r.paidMonths = [...set].sort().slice(-24);
 }

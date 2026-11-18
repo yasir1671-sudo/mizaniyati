@@ -1,8 +1,8 @@
 // حفظ البيانات على الجهاز (localStorage) وإدارة الحالة
 import { iconKey, TINT_KEYS } from './icons.js';
 
-export const APP_VERSION = '2.1.0';
-export const DATA_VERSION = 3;
+export const APP_VERSION = '2.2.0';
+export const DATA_VERSION = 4;
 const KEY = 'mizaniyati:data';
 
 export function uid(prefix = 'id') {
@@ -32,6 +32,8 @@ const DEFAULT_CATEGORIES = [
 const DEFAULTS_BY_ID = new Map(DEFAULT_CATEGORIES.map((c) => [c.id, c]));
 
 export const PROTECTED_CATEGORIES = ['cat_other', 'inc_other'];
+// الأساسيات بتنحجز أول، وما بتنقص بالاقتراحات (المطاعم والهدايا ثانوية)
+export const ESSENTIAL_DEFAULTS = ['cat_grocery', 'cat_transport', 'cat_bills', 'cat_rent', 'cat_health', 'cat_charity', 'cat_debtpay'];
 
 // التوزيع التلقائي بيترك 15% من المتاح فائض، مشان يضل في مجال للمشتريات المخططة
 export const AUTO_BUDGET_SHARE = 0.85;
@@ -50,6 +52,9 @@ export function defaultState() {
       defaultAccountId: 'acc_usd', savingsTarget: 0, plannerStart: 0, lastBackupAt: null,
       // settledMonths: دخل الشهر وصل كله. monthSavings: ادخار مختلف لشهر معيّن. dismissed: تذكيرات انزاحت
       settledMonths: {}, monthSavings: {}, dismissed: {},
+      // monthBudgets: ميزانية استثنائية لشهر واحد (بترجع الأصلية الشهر الجاي)
+      // buffer: مبلغ بيضل آخر الشهر لأول أيام الشهر الجاي. closedMonths: شهور انتقل فائضها للأهداف
+      monthBudgets: {}, buffer: 50, closedMonths: {},
     },
     rates: {
       TRY: { rate: null, mode: 'auto', at: null },
@@ -61,7 +66,7 @@ export function defaultState() {
       { id: 'acc_try', name: 'كاش تركي', currency: 'TRY', opening: 0 },
       { id: 'acc_syp', name: 'كاش سوري', currency: 'SYP', opening: 0 },
     ],
-    categories: DEFAULT_CATEGORIES.map((c) => ({ budget: 0, fixed: false, private: false, ...c, aliases: [...c.aliases] })),
+    categories: DEFAULT_CATEGORIES.map((c) => ({ budget: 0, fixed: false, private: false, essential: ESSENTIAL_DEFAULTS.includes(c.id), ...c, aliases: [...c.aliases] })),
     incomeSources: [],
     transactions: [],
     // المخطِّط: أغراض بدك تشتريها (want) والتزامات لازم تندفع بشهر معيّن (commitment)
@@ -123,10 +128,18 @@ export function migrate(d) {
   // من الإصدار 3: فئة «سداد دين علي» (مرة وحدة، إذا انحذفت ما منرجّعها)
   if ((d.version || 1) < 3 && !out.categories.some((c) => c.id === 'cat_debtpay')) {
     const otherIdx = out.categories.findIndex((c) => c.id === 'cat_other');
-    const cat = { ...DEFAULTS_BY_ID.get('cat_debtpay'), budget: 0, fixed: false, private: false };
+    const cat = { ...DEFAULTS_BY_ID.get('cat_debtpay'), budget: 0, fixed: false, private: false, essential: true };
     cat.aliases = [...cat.aliases];
     if (otherIdx >= 0) out.categories.splice(otherIdx, 0, cat); else out.categories.push(cat);
   }
+  // من الإصدار 4: الفئات الأساسية (بتنحجز أول)
+  for (const c of out.categories) {
+    if (c.essential === undefined) c.essential = c.type === 'expense' && (ESSENTIAL_DEFAULTS.includes(c.id) || Boolean(c.fixed));
+  }
+  out.recurring = out.recurring.map((r) => ({ ...r, paidMonths: Array.isArray(r.paidMonths) ? r.paidMonths : [] }));
+  out.planItems = out.planItems.map((it) => ({ ...it, date: it.date || null, confirmed: Boolean(it.confirmed) }));
+  out.goals = out.goals.map((g) => ({ ...g, useSurplus: g.useSurplus !== false, linkedDebtIds: Array.isArray(g.linkedDebtIds) ? g.linkedDebtIds : [] }));
+  if (!Number.isFinite(Number(out.settings.buffer))) out.settings.buffer = 50;
   out.version = DATA_VERSION;
   return out;
 }

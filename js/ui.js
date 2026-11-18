@@ -204,11 +204,13 @@ export function selectButton({ value, options, onChange, title, placeholder = '�
 const WEEK = ['س', 'ح', 'ن', 'ث', 'ر', 'خ', 'ج']; // بتبلّش بالسبت
 
 // تقويم: اختيار يوم
-export function openDatePicker({ value, onPick, title = 'التاريخ' }) {
+export function openDatePicker({ value, onPick, title = 'التاريخ', future = false, allowEmpty = false, emptyLabel = 'بلا موعد' }) {
   const today = todayISO();
   let shown = (value || today).slice(0, 7);
   openSheet(title, (body, close) => {
     const pick = (d) => { haptic('select'); onPick(d); close(); };
+    const plus = (n) => { const x = new Date(); x.setDate(x.getDate() + n); return iso(x); };
+    const chip = (label, d) => h('button', { type: 'button', class: 'chip', 'aria-pressed': String(value === d), onclick: () => pick(d) }, label);
     function render() {
       const [y, m] = shown.split('-').map(Number);
       const first = new Date(y, m - 1, 1);
@@ -223,19 +225,17 @@ export function openDatePicker({ value, onPick, title = 'التاريخ' }) {
           onclick: () => pick(ds),
         }, String(d)));
       }
-      const y1 = new Date(); y1.setDate(y1.getDate() - 1);
-      const y2 = new Date(); y2.setDate(y2.getDate() - 2);
       fill(body, [
-        h('div', { class: 'chips', style: { marginBottom: '14px' } },
-          h('button', { type: 'button', class: 'chip', 'aria-pressed': String(value === today), onclick: () => pick(today) }, 'اليوم'),
-          h('button', { type: 'button', class: 'chip', 'aria-pressed': String(value === iso(y1)), onclick: () => pick(iso(y1)) }, 'أمس'),
-          h('button', { type: 'button', class: 'chip', 'aria-pressed': String(value === iso(y2)), onclick: () => pick(iso(y2)) }, 'قبل يومين')),
+        h('div', { class: 'chips', style: { marginBottom: '14px' } }, future
+          ? [chip('اليوم', today), chip('بكرة', plus(1)), chip('بعد أسبوع', plus(7)), chip('بعد شهر', plus(30))]
+          : [chip('اليوم', today), chip('أمس', plus(-1)), chip('قبل يومين', plus(-2))]),
         h('div', { class: 'cal-nav' },
           h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'الشهر السابق', onclick: () => { shown = addMonths(shown, -1); render(); } }, icon('chevR', 20)),
           h('strong', null, monthLabel(shown)),
           h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'الشهر التالي', onclick: () => { shown = addMonths(shown, 1); render(); } }, icon('chevL', 20))),
         h('div', { class: 'cal-grid cal-week' }, WEEK.map((w) => h('span', null, w))),
         h('div', { class: 'cal-grid' }, cells),
+        allowEmpty ? h('button', { type: 'button', class: 'btn secondary block', style: { marginTop: '14px' }, onclick: () => pick('') }, emptyLabel) : null,
       ]);
     }
     render();
@@ -275,14 +275,14 @@ export function openDayPicker({ value, onPick, title = 'يوم بالشهر' }) 
 }
 
 // زر تاريخ أو شهر بشكل الحقل
-export function dateButton({ value, onChange, mode = 'day', placeholder = 'اختار', allowEmpty = false, title, emptyLabel }) {
+export function dateButton({ value, onChange, mode = 'day', placeholder = 'اختار', allowEmpty = false, title, emptyLabel, future = false }) {
   let label = placeholder;
   if (value) label = mode === 'month' ? monthLabel(value) : dayLabel(value);
   return h('button', {
     type: 'button', class: 'select-btn',
     onclick: () => (mode === 'month'
       ? openMonthPicker({ value, onPick: onChange, allowEmpty, title, emptyLabel })
-      : openDatePicker({ value, onPick: onChange, title })),
+      : openDatePicker({ value, onPick: onChange, title, future, allowEmpty, emptyLabel })),
   }, icon('calendar', 18), h('span', { class: value ? 'sb-val' : 'sb-val ph' }, label), icon('chevD', 18));
 }
 

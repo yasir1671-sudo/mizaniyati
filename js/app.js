@@ -8,6 +8,7 @@ import { renderActivity } from './views/activity.js';
 import { renderReportsPage } from './views/reports.js';
 import { renderPlanHub, renderPlanMonth, renderPlanYear, renderPlanItems, renderPlanGoals, planActions, resetPlanMonth } from './views/plan.js';
 import { renderBills, billsActions } from './views/bills.js';
+import { renderMonthMap, calendarActions } from './views/calendar.js';
 import { renderMoneyHub, renderDebts, renderZakat, moneyActions } from './views/money.js';
 import { renderSettings, renderCategories, categoriesActions } from './views/settings.js';
 import { openAddSheet } from './keypad.js';
@@ -20,6 +21,7 @@ const ROUTES = {
   'activity/reports': { tab: 'activity', parent: 'activity', title: 'تحليل المصاريف', render: renderReportsPage },
   plan: { tab: 'plan', render: renderPlanHub },
   'plan/month': { tab: 'plan', parent: 'plan', title: 'ميزانية الشهر', render: renderPlanMonth, onEnter: resetPlanMonth },
+  'plan/calendar': { tab: 'plan', parent: 'plan', title: 'خريطة الشهر', render: renderMonthMap, actions: calendarActions },
   'plan/bills': { tab: 'plan', parent: 'plan', title: 'الاشتراكات والفواتير', render: renderBills, actions: billsActions },
   'plan/year': { tab: 'plan', parent: 'plan', title: 'السنة الجاية', render: renderPlanYear, actions: planActions.year },
   'plan/items': { tab: 'plan', parent: 'plan', title: 'المشتريات والالتزامات', render: renderPlanItems, actions: planActions.items },

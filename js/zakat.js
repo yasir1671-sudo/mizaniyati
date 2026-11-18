@@ -3,7 +3,7 @@ import { h, fill, openSheet, toast, field, segmented, selectButton, dateButton }
 import { accountOpts } from './forms.js';
 import { store, uid } from './store.js';
 import { CURRENCIES, fmt, parseAmount, rateOf, toUSD, roundTo } from './money.js';
-import { todayISO, addDays } from './dates.js';
+import { todayISO, addDays, iso } from './dates.js';
 import { accountBalances, debtRemaining } from './calc.js';
 
 export const NISAB_GRAMS = { gold: 85, silver: 595 };
@@ -52,10 +52,101 @@ export function computeZakat(state) {
   };
 }
 
-// موعد الزكاة الجاية = آخر حول + سنة هجرية (354 يوم تقريباً)
+/*
+ * الحول التلقائي: منحسب مالك الزكوي يوم بيوم من أول ما بلّشت تسجّل (بأسعار اليوم).
+ * أول ما يوصل النصاب بيبلّش الحول، وإذا نزل تحته بينلغى، وبيرجع يبلّش لما يرجع يوصل.
+ * التاريخ اللي بتحطه بإيدك (آخر زكاة، أو قبل ما تبلّش بالتطبيق) بيُعتمد إذا المال ما نزل بعده.
+ */
+let hawlMemo = null;
+export function hawlStatus(state) {
+  const stamp = `${store.version}|${todayISO()}`;
+  const mine = state === store.state;
+  if (mine && hawlMemo?.stamp === stamp) return hawlMemo.result;
+  const result = computeHawl(state);
+  if (mine) hawlMemo = { stamp, result };
+  return result;
+}
+
+function computeHawl(state) {
+  const Z = computeZakat(state);
+  const today = todayISO();
+  const z = state.zakat;
+  const manual = z.lastDate || null;
+  if (Z.nisab == null) return { known: false, Z, manual };
+  const constant = Z.gold + Z.silver + Z.stocks + Z.other;
+  const created = state.createdAt ? iso(new Date(state.createdAt)) : today;
+  let start = [created, ...state.transactions.map((t) => t.date), ...state.debts.map((d) => d.date).filter(Boolean)].sort()[0] || today;
+  if (start > today) start = today;
+
+  const bal = new Map(state.accounts.map((a) => [a.id, Number(a.opening) || 0]));
+  const add = (id, v) => { if (bal.has(id)) bal.set(id, bal.get(id) + v); };
+  const txs = state.transactions.filter((t) => t.date <= today).sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+  // الديون بتاريخها: الدين بيبلّش بتاريخه، والدفعات بتنقصه
+  const debts = state.debts.map((d) => ({
+    from: d.date || start, theyOwe: d.direction === 'theyOwe', cur: d.currency, amount: Number(d.amount) || 0,
+    payments: (d.payments || []).map((p) => ({ date: p.date || start, amount: Number(p.amount) || 0 })),
+  }));
+  let ti = 0;
+  let aboveSince = null;
+  let droppedOn = null;
+  let everAbove = false;
+  const series = [];
+  for (let day = start; day <= today; day = addDays(day, 1)) {
+    while (ti < txs.length && txs[ti].date <= day) {
+      const t = txs[ti++];
+      if (t.type === 'expense') add(t.accountId, -t.amount);
+      else if (t.type === 'income') add(t.accountId, t.amount);
+      else if (t.type === 'transfer') { add(t.accountId, -t.amount); add(t.toAccountId, t.toAmount); }
+      else if (t.type === 'debt') add(t.accountId, t.flow === 'in' ? t.amount : -t.amount);
+    }
+    let recv = 0;
+    let pay = 0;
+    for (const d of debts) {
+      if (d.from > day) continue;
+      const paid = d.payments.reduce((s, p) => s + (p.date <= day ? p.amount : 0), 0);
+      const u = toUSD(state, Math.max(0, d.amount - paid), d.cur);
+      if (!Number.isFinite(u)) continue;
+      if (d.theyOwe) recv += u; else pay += u;
+    }
+    let cash = 0;
+    for (const a of state.accounts) {
+      const v = bal.get(a.id) || 0;
+      if (v <= 0) continue;
+      const u = toUSD(state, v, a.currency);
+      if (Number.isFinite(u)) cash += u;
+    }
+    const w = cash + (z.includeReceivables ? recv : 0) + constant - (z.deductPayables ? pay : 0);
+    series.push({ date: day, w });
+    if (w >= Z.nisab) { if (!aboveSince) aboveSince = day; everAbove = true; }
+    else { if (aboveSince) droppedOn = day; aboveSince = null; }
+  }
+  const above = Z.total >= Z.nisab;
+  if (above && !aboveSince) aboveSince = today;
+  let hawlStart = null;
+  let reason = null;
+  if (above) {
+    if (aboveSince === start) {
+      // فوق النصاب من أول ما بلّشت: التاريخ اليدوي إذا في، وإلا من أول التسجيل
+      if (manual) { hawlStart = manual; reason = 'manual'; } else { hawlStart = start; reason = 'fromStart'; }
+    } else if (manual && manual > aboveSince) {
+      hawlStart = manual; reason = 'manual';
+    } else {
+      hawlStart = aboveSince; reason = 'auto';
+    }
+  }
+  // التاريخ اليدوي انلغى إذا المال نزل تحت النصاب بعده
+  const manualVoided = Boolean(manual) && Boolean(droppedOn) && droppedOn > manual && (!hawlStart || hawlStart !== manual);
+  return {
+    known: true, Z, start, above, aboveSince, droppedOn, everAbove, manual, manualVoided,
+    hawlStart, reason, due: hawlStart ? addDays(hawlStart, LUNAR_YEAR_DAYS) : null, series,
+  };
+}
+
+// موعد الزكاة الجاية = بداية الحول + سنة هجرية (354 يوم تقريباً)
 export function zakatDueDate(state) {
-  const last = state.zakat.lastDate;
-  return last ? addDays(last, LUNAR_YEAR_DAYS) : null;
+  const H = hawlStatus(state);
+  if (H.known) return H.due;
+  return state.zakat.lastDate ? addDays(state.zakat.lastDate, LUNAR_YEAR_DAYS) : null;
 }
 
 let metalsInFlight = false;
