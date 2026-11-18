@@ -1,5 +1,5 @@
 // عامل الخدمة: بيخلّي التطبيق يشتغل بدون نت. غيّر CACHE مع كل إصدار جديد.
-const CACHE = 'mizaniyati-2.1.0';
+const CACHE = 'mizaniyati-2.2.0';
 const FONT_CACHE = 'mizaniyati-fonts';
 const SHELL = [
   './',
@@ -26,8 +26,15 @@ const SHELL = [
   './js/store.js',
   './js/ui.js',
   './js/zakat.js',
+  './js/month.js',
+  './js/advisor.js',
+  './js/suggest.js',
+  './js/whatif.js',
+  './js/monthsheet.js',
+  './js/goals.js',
   './js/views/activity.js',
   './js/views/bills.js',
+  './js/views/calendar.js',
   './js/views/home.js',
   './js/views/money.js',
   './js/views/plan.js',
