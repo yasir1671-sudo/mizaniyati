@@ -174,10 +174,11 @@ export function scheduleText(it, s) {
     default: break;
   }
   if (it.kind === 'commitment') return s.month === cur ? `لازم هالشهر${it.date ? `، ${when0}` : ''}` : `لازم ${when0}`;
+  // «late» يعني الخطة شايفة إن المصاري بتكفيه بعد الموعد اللي بدك ياه (مش إنه الموعد فات)
+  if (s.status === 'late') return `بدك ياه ${when0}، بس مصاريك ما بتكفّيه قبل ${monthLabel(s.month)}`;
   let when;
   if (s.month === cur) when = 'فيك تشتريه هالشهر';
   else when = `بـ ${monthLabel(s.month)}، بعد ${monthsText(s.wait)}`;
-  if (s.status === 'late') return `${when}. بدك ياه ${when0}، يعني متأخر عن موعدك`;
   return when0 ? `${when}، وبدك ياه ${when0}` : when;
 }
 

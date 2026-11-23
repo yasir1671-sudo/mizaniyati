@@ -8,6 +8,8 @@ import { refreshRates } from './rates.js';
 import { buildPlan, scheduleText, statusClass, goalMonthly, itemUSD } from './planner.js';
 import { purchaseSuggestions, impact } from './advisor.js';
 import { suggestionCard } from './suggest.js';
+import { learnNote } from './parse.js';
+import { orderedCats } from './smart.js';
 
 export const INCOME_KINDS = {
   salary: { label: 'راتب', icon: 'briefcase', tint: 'mint', placeholder: 'مثلاً: راتب الشغل' },
@@ -176,7 +178,7 @@ export function openTxForm({ tx = null, type = 'expense', prefill = {} } = {}) {
             h('input', { type: 'text', inputmode: 'decimal', value: d.rate, placeholder: 'اكتب السعر', oninput: (e) => { d.rate = e.target.value; refreshHints(); } }),
             hintEl));
         }
-        const cats = s.categories.filter((x) => x.type === d.type);
+        const cats = orderedCats(s, d.type);
         const chips = h('div', { class: 'chips', role: 'group', 'aria-label': 'الفئة' },
           cats.map((x) => h('button', {
             type: 'button', class: 'chip', 'aria-pressed': String(x.id === d.categoryId),
@@ -259,6 +261,7 @@ export function openTxForm({ tx = null, type = 'expense', prefill = {} } = {}) {
       }
       store.update((x) => {
         upsert(x.transactions, rec);
+        if (rec.type !== 'transfer') learnNote(x, rec.note, rec.categoryId);
         if (adopt) x.rates[adopt[0]] = { ...x.rates[adopt[0]], rate: adopt[1], at: Date.now() };
         const it = rec.planItemId && rec.type === 'expense' ? x.planItems.find((i) => i.id === rec.planItemId) : null;
         if (it) Object.assign(it, { boughtUSD: rec.usd, boughtMonth: rec.date.slice(0, 7), boughtAt: rec.date });
@@ -489,7 +492,7 @@ export function openCategoryForm(cat = null, type = 'expense') {
           iconPicker(CATEGORY_ICON_CHOICES, d.icon, (name) => { d.icon = name; preview.replaceWith(preview = badge(d.icon, d.tint, 52)); }, tintHex(d.tint))),
         d.type === 'expense' ? field('الميزانية الشهرية بالدولار', h('input', { type: 'text', inputmode: 'decimal', value: d.budget, placeholder: '0', oninput: (e) => { d.budget = e.target.value; } })) : null,
         h('div', { class: 'sheet-rows rows' },
-          d.type === 'expense' ? switchRow('مصروف ثابت', 'متل الإيجار والفواتير. ما بيدخل بحساب مصروف اليوم.', d.fixed, (v) => { d.fixed = v; }) : null,
+          d.type === 'expense' ? switchRow('مصروف ثابت', 'متل الإيجار والفواتير: مبلغه بينحجز من مصاري الشهر وما بيدخل بمصروف اليوم. بالشهر اللي بلّشت فيه بالنص بينحسب على الأيام الباقية بس، وفيك تعدّله من «ميزانية باقي الشهر».', d.fixed, (v) => { d.fixed = v; }) : null,
           d.type === 'expense' ? switchRow('أساسي', 'متل المواصلات والبقالة: بينحجز مبلغه أول إذا المصاري قليلة، وما بنقترح تخفّفه. الثانوي (مطاعم، هدايا) بياخد من اللي بيبقى.', d.essential, (v) => { d.essential = v; }) : null,
           switchRow('اسم خاص', 'بيختفي الاسم والأيقونة بكل مكان، وبيطلع «خاص» بدالهم. المبلغ بيضل محسوب.', d.private, (v) => { d.private = v; })),
         field('كلمات بتدل عليها', h('input', { type: 'text', value: d.aliases, placeholder: 'مثلاً: كتاب، دورة، قرطاسية', oninput: (e) => { d.aliases = e.target.value; } }),
@@ -530,6 +533,54 @@ export function openCategoryForm(cat = null, type = 'expense') {
 
     render();
   });
+}
+
+/* ---------- ترتيب الفئات ---------- */
+// الترتيب بيطلع بالميزانية والإعدادات، ولوحة الإضافة بتبلّش فيه وبعدين بتقدّم الأكتر استعمالاً
+export function openReorderSheet(type = 'expense') {
+  let cur = type;
+  openSheet('رتّب الفئات', (body) => {
+    function move(id, dir) {
+      let moved = false;
+      store.update((s) => {
+        const idxs = s.categories.map((c, i) => [c, i]).filter(([c]) => c.type === cur).map(([, i]) => i);
+        const list = idxs.map((i) => s.categories[i]);
+        const pos = list.findIndex((c) => c.id === id);
+        let target = pos;
+        if (dir === 'up') target = pos - 1;
+        else if (dir === 'down') target = pos + 1;
+        else if (dir === 'top') target = 0;
+        else if (dir === 'bottom') target = list.length - 1;
+        if (pos < 0 || target < 0 || target >= list.length || target === pos) return;
+        const [item] = list.splice(pos, 1);
+        list.splice(target, 0, item);
+        idxs.forEach((gi, k) => { s.categories[gi] = list[k]; });
+        moved = true;
+      }, { silent: true });
+      if (moved) { haptic('select'); render(id); }
+    }
+    function render(focusId = null) {
+      const s = store.state;
+      const cats = s.categories.filter((c) => c.type === cur);
+      const listEl = h('div', { class: 'rows sheet-rows reorder-list' }, cats.map((c, i) => h('div', { class: `row${c.id === focusId ? ' moved' : ''}`, 'data-id': c.id },
+        h('span', { class: 'reorder-n' }, String(i + 1)),
+        badge(c.icon, c.tint, 34),
+        h('span', { class: 'row-main' },
+          h('span', { class: 'row-title' }, c.name),
+          c.type === 'expense' ? h('span', { class: 'row-sub' }, c.budget ? `ميزانية ${fmt(c.budget)}` : 'بلا ميزانية') : null),
+        h('span', { class: 'reorder-btns' },
+          h('button', { type: 'button', class: 'icon-btn ghost', 'aria-label': `${c.name} للأول`, disabled: i === 0, onclick: () => move(c.id, 'top') }, icon('toTop', 18)),
+          h('button', { type: 'button', class: 'icon-btn ghost', 'aria-label': `${c.name} لفوق`, disabled: i === 0, onclick: () => move(c.id, 'up') }, icon('chevU', 18)),
+          h('button', { type: 'button', class: 'icon-btn ghost', 'aria-label': `${c.name} لتحت`, disabled: i === cats.length - 1, onclick: () => move(c.id, 'down') }, icon('chevD', 18))))));
+      fill(body, [
+        segmented([{ value: 'expense', label: 'المصاريف' }, { value: 'income', label: 'الدخل' }], cur, (v) => { cur = v; render(); }, 'النوع'),
+        h('p', { class: 'hint' }, 'حط اللي بتستعمله أكتر وإله ميزانية فوق، واللي ما بتستعمله تحت. هالترتيب بيطلع بالميزانية والإعدادات.'),
+        listEl,
+      ]);
+      if (focusId) requestAnimationFrame(() => listEl.querySelector(`[data-id="${focusId}"]`)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }));
+    }
+    render();
+  }, { tall: true, onClose: () => store.update(() => {}) });
 }
 
 /* ---------- سعر صرف ---------- */

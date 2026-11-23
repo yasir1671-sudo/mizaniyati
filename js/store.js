@@ -1,8 +1,8 @@
 // حفظ البيانات على الجهاز (localStorage) وإدارة الحالة
 import { iconKey, TINT_KEYS } from './icons.js';
 
-export const APP_VERSION = '2.2.0';
-export const DATA_VERSION = 4;
+export const APP_VERSION = '2.3.0';
+export const DATA_VERSION = 5;
 const KEY = 'mizaniyati:data';
 
 export function uid(prefix = 'id') {
@@ -10,17 +10,18 @@ export function uid(prefix = 'id') {
 }
 
 // الكلمات (aliases) بتساعد الإدخال السريع يعرف الفئة: «50 أكل»
+// قاموس الأغراض الشائعة باللهجة (الإدخال بالصوت والكتابة). التطبيق كمان بيتعلّم من تسجيلاتك
 const DEFAULT_CATEGORIES = [
-  { id: 'cat_food', type: 'expense', name: 'أكل ومطاعم', icon: 'food', tint: 'coral', aliases: ['أكل', 'طعام', 'غدا', 'غداء', 'عشا', 'عشاء', 'فطور', 'ترويقة', 'مطعم', 'مطاعم', 'شاورما', 'فلافل', 'بيتزا', 'سندويش', 'سندويشة', 'سندويشات', 'فروج', 'كريب', 'برغر', 'طبخة', 'عزيمة', 'وجبة'] },
-  { id: 'cat_snacks', type: 'expense', name: 'سناكات وقهوة', icon: 'coffee', tint: 'amber', aliases: ['سناك', 'سناكات', 'قهوة', 'شاي', 'حلو', 'حلويات', 'بسكوت', 'عصير', 'بوظة', 'شيبس', 'كولا', 'متة'] },
-  { id: 'cat_grocery', type: 'expense', name: 'بقالة وخضرة', icon: 'cart', tint: 'mint', aliases: ['بقالة', 'خضرة', 'خضار', 'فواكه', 'سوبرماركت', 'ماركت', 'خبز', 'لحمة', 'جاج', 'دجاج', 'رز', 'زيت', 'سكر'] },
-  { id: 'cat_transport', type: 'expense', name: 'مواصلات', icon: 'car', tint: 'blue', aliases: ['مواصلات', 'تكسي', 'تاكسي', 'سرفيس', 'باص', 'بنزين', 'مازوت', 'أجرة', 'اجار', 'ماتور', 'موتور', 'توصيلة', 'فان', 'ميكرو', 'اوبر', 'مترو', 'سيارة'] },
-  { id: 'cat_bills', type: 'expense', name: 'فواتير واشتراكات', icon: 'receipt', tint: 'teal', fixed: true, aliases: ['فاتورة', 'فواتير', 'كهربا', 'كهرباء', 'مياه', 'نت', 'انترنت', 'رصيد', 'اشتراك', 'موبايل', 'باقة', 'غاز', 'امبير'] },
-  { id: 'cat_rent', type: 'expense', name: 'سكن وإيجار', icon: 'house', tint: 'violet', fixed: true, aliases: ['إيجار', 'ايجار', 'سكن', 'بيت'] },
-  { id: 'cat_health', type: 'expense', name: 'صحة ودواء', icon: 'pill', tint: 'pink', aliases: ['دوا', 'دواء', 'صيدلية', 'دكتور', 'طبيب', 'مشفى', 'تحاليل', 'عيادة'] },
-  { id: 'cat_clothes', type: 'expense', name: 'لبس', icon: 'shirt', tint: 'sage', aliases: ['لبس', 'تياب', 'ثياب', 'قميص', 'بنطلون', 'حذاء', 'صباط', 'جاكيت', 'كنزة'] },
-  { id: 'cat_family', type: 'expense', name: 'عائلة وهدايا', icon: 'gift', tint: 'gold', aliases: ['هدية', 'هدايا', 'عائلة', 'أهل', 'عيدية'] },
-  { id: 'cat_charity', type: 'expense', name: 'صدقة وزكاة', icon: 'heart', tint: 'mint', aliases: ['صدقة', 'زكاة', 'تبرع', 'كفالة'] },
+  { id: 'cat_food', type: 'expense', name: 'أكل ومطاعم', icon: 'food', tint: 'coral', aliases: ['أكل', 'اكلة', 'طعام', 'غدا', 'غداء', 'عشا', 'عشاء', 'فطور', 'ترويقة', 'مطعم', 'مطاعم', 'شاورما', 'شاورمة', 'فلافل', 'بيتزا', 'سندويش', 'سندويشة', 'سندويشات', 'فروج', 'كريب', 'برغر', 'همبرغر', 'طبخة', 'عزيمة', 'وجبة', 'وجبات', 'فطاير', 'فطيرة', 'مناقيش', 'منقوشة', 'صفيحة', 'فول', 'حمص', 'فتة', 'مسبحة', 'كبة', 'كباب', 'مشاوي', 'مشوي', 'طاووق', 'شيش', 'بروستد', 'كرسبي', 'زنجر', 'كنتاكي', 'ماكدونالدز', 'منسف', 'مندي', 'كبسة', 'محشي', 'طلبية', 'ديليفري', 'سوشي', 'باستا', 'نودلز', 'دونر', 'لحم بعجين', 'لحمة بعجين', 'مقلوبة'] },
+  { id: 'cat_snacks', type: 'expense', name: 'سناكات وقهوة', icon: 'coffee', tint: 'amber', aliases: ['سناك', 'سناكات', 'قهوة', 'قهوه', 'نسكافيه', 'كابتشينو', 'لاتيه', 'اسبريسو', 'موكا', 'شاي', 'متة', 'حلو', 'حلويات', 'حلوى', 'بسكوت', 'بسكويت', 'شوكولا', 'شوكولاتة', 'شوكلاتة', 'شوكولاته', 'شكولاتة', 'كاكاو', 'نوتيلا', 'كيك', 'كيكة', 'كاتو', 'دونات', 'كرواسان', 'معمول', 'كنافة', 'بقلاوة', 'هريسة', 'بوظة', 'ايسكريم', 'آيس', 'شيبس', 'تشيبس', 'بزر', 'بزورات', 'مكسرات', 'فستق', 'قضامة', 'علكة', 'سكاكر', 'ملبس', 'عصير', 'عصاير', 'كولا', 'بيبسي', 'سفن', 'ميرندا', 'فانتا', 'مشروب', 'مشروبات', 'ريدبول', 'انرجي', 'سحلب', 'عرقسوس', 'جلاب', 'ليموناضة', 'ويفر', 'كرانشي'] },
+  { id: 'cat_grocery', type: 'expense', name: 'بقالة وخضرة', icon: 'cart', tint: 'mint', aliases: ['بقالة', 'خضرة', 'خضار', 'خضراوات', 'فواكه', 'فاكهة', 'سوبرماركت', 'ماركت', 'مول', 'خبز', 'صمون', 'كعك', 'لحمة', 'لحم', 'جاج', 'دجاج', 'صدور', 'شرحات', 'سمك', 'تونة', 'رز', 'برغل', 'عدس', 'طحين', 'معكرونة', 'شعيرية', 'زيت', 'سمنة', 'زبدة', 'سكر', 'ملح', 'حليب', 'لبن', 'لبنة', 'جبنة', 'جبن', 'بيض', 'زيتون', 'مربى', 'عسل', 'بندورة', 'طماطم', 'خيار', 'بطاطا', 'بصل', 'توم', 'ثوم', 'كوسا', 'باذنجان', 'فليفلة', 'خس', 'بقدونس', 'نعنع', 'ليمون', 'تفاح', 'موز', 'برتقال', 'عنب', 'رمان', 'بطيخ', 'مشمش', 'فريز', 'تمر', 'معلبات', 'منظفات', 'صابون', 'شامبو', 'معجون', 'مسحوق', 'كلور', 'محارم', 'فاين', 'مناديل', 'مي', 'مياه', 'قنينة', 'بهارات'] },
+  { id: 'cat_transport', type: 'expense', name: 'مواصلات', icon: 'car', tint: 'blue', aliases: ['مواصلات', 'تكسي', 'تاكسي', 'سرفيس', 'باص', 'بنزين', 'مازوت', 'أجرة', 'اجار', 'ماتور', 'موتور', 'توصيلة', 'فان', 'ميكرو', 'اوبر', 'بولت', 'مترو', 'ترام', 'ترامواي', 'مرمراي', 'دولموش', 'عبارة', 'فيري', 'سيارة', 'كارت', 'استانبول كارت', 'تذكرة', 'تذاكر', 'شحن كارت', 'موقف', 'كراج'] },
+  { id: 'cat_bills', type: 'expense', name: 'فواتير واشتراكات', icon: 'receipt', tint: 'teal', fixed: true, aliases: ['فاتورة', 'فواتير', 'كهربا', 'كهرباء', 'مياه', 'نت', 'انترنت', 'واي فاي', 'رصيد', 'اشتراك', 'موبايل', 'باقة', 'غاز', 'امبير', 'تلفون', 'خط', 'نتفلكس', 'يوتيوب', 'سبوتيفاي', 'كلود', 'جيميناي', 'شات'] },
+  { id: 'cat_rent', type: 'expense', name: 'سكن وإيجار', icon: 'house', tint: 'violet', fixed: true, aliases: ['إيجار', 'ايجار', 'سكن', 'بيت', 'اجرة البيت'] },
+  { id: 'cat_health', type: 'expense', name: 'صحة ودواء', icon: 'pill', tint: 'pink', aliases: ['دوا', 'دواء', 'ادوية', 'صيدلية', 'دكتور', 'طبيب', 'مشفى', 'مستشفى', 'تحاليل', 'تحليل', 'عيادة', 'اسنان', 'سنان', 'صورة شعاعية', 'اشعة', 'نظارات', 'نظارة', 'عدسات', 'فيتامين', 'فيتامينات', 'مسكن', 'بنادول', 'مرهم', 'كشفية'] },
+  { id: 'cat_clothes', type: 'expense', name: 'لبس', icon: 'shirt', tint: 'sage', aliases: ['لبس', 'تياب', 'ثياب', 'قميص', 'تيشيرت', 'بنطلون', 'جينز', 'حذاء', 'صباط', 'جزمة', 'بوط', 'شحاطة', 'جاكيت', 'جاكيته', 'معطف', 'كنزة', 'هودي', 'كلسات', 'جرابات', 'بيجاما', 'شورت', 'طقم', 'بدلة', 'كرافة', 'شال', 'حجاب', 'عباية', 'قبعة', 'طاقية'] },
+  { id: 'cat_family', type: 'expense', name: 'عائلة وهدايا', icon: 'gift', tint: 'gold', aliases: ['هدية', 'هدايا', 'عائلة', 'أهل', 'عيدية', 'نقوط', 'عرس', 'خطبة', 'مولود'] },
+  { id: 'cat_charity', type: 'expense', name: 'صدقة وزكاة', icon: 'heart', tint: 'mint', aliases: ['صدقة', 'زكاة', 'تبرع', 'كفالة', 'جامع', 'مسجد', 'فقير', 'محتاج', 'فطرة'] },
   { id: 'cat_debtpay', type: 'expense', name: 'سداد دين علي', icon: 'people', tint: 'violet', aliases: ['سددت', 'رجعت', 'رجّعت', 'وفيت'] },
   { id: 'cat_other', type: 'expense', name: 'أخرى', icon: 'box', tint: 'slate', aliases: [] },
   { id: 'inc_salary', type: 'income', name: 'راتب', icon: 'briefcase', tint: 'mint', aliases: ['راتب', 'معاش'] },
@@ -55,6 +56,10 @@ export function defaultState() {
       // monthBudgets: ميزانية استثنائية لشهر واحد (بترجع الأصلية الشهر الجاي)
       // buffer: مبلغ بيضل آخر الشهر لأول أيام الشهر الجاي. closedMonths: شهور انتقل فائضها للأهداف
       monthBudgets: {}, buffer: 50, closedMonths: {},
+      // learned: كلمات تعلّمها التطبيق من تسجيلاتك (شوكولاتة ← سناكات). catSortUsage: لوحة الإضافة حسب الاستعمال
+      learned: {}, catSortUsage: true,
+      // قراءة الفواتير بجيميناي: المفتاح بيضل على هالجهاز بس (ما بيدخل بالنسخة الاحتياطية)
+      ai: { key: '', model: '' },
     },
     rates: {
       TRY: { rate: null, mode: 'auto', at: null },
@@ -140,6 +145,18 @@ export function migrate(d) {
   out.planItems = out.planItems.map((it) => ({ ...it, date: it.date || null, confirmed: Boolean(it.confirmed) }));
   out.goals = out.goals.map((g) => ({ ...g, useSurplus: g.useSurplus !== false, linkedDebtIds: Array.isArray(g.linkedDebtIds) ? g.linkedDebtIds : [] }));
   if (!Number.isFinite(Number(out.settings.buffer))) out.settings.buffer = 50;
+  // من الإصدار 5: قاموس أوسع للصوت (منضيف الكلمات الجديدة بلا ما نمس اللي عدّلها المستخدم)
+  if ((d.version || 1) < 5) {
+    for (const c of out.categories) {
+      const def = DEFAULTS_BY_ID.get(c.id);
+      if (!def) continue;
+      const set = new Set([...(c.aliases || []), ...def.aliases]);
+      if (c.id === 'cat_rent') { set.delete('اجار'); set.delete('آجار'); }
+      c.aliases = [...set];
+    }
+  }
+  if (!out.settings.learned || typeof out.settings.learned !== 'object') out.settings.learned = {};
+  out.settings.ai = { ...base.settings.ai, ...(out.settings.ai || {}) };
   out.version = DATA_VERSION;
   return out;
 }
@@ -188,7 +205,14 @@ export const store = {
     if (!silent) emit();
     return r;
   },
-  replaceAll(next) { state = migrate(next); save(); emit(); },
+  // استرجاع نسخة: مفتاح جيميناي اللي على هالجهاز بيضل
+  replaceAll(next) {
+    const ai = state.settings.ai;
+    state = migrate(next);
+    if (ai?.key && !state.settings.ai?.key) state.settings.ai = { ...ai };
+    save();
+    emit();
+  },
   reset() { state = defaultState(); save(); emit(); },
 };
 
@@ -197,7 +221,9 @@ window.addEventListener('storage', (e) => {
 });
 
 export function backupPayload() {
-  return { app: 'mizaniyati', version: DATA_VERSION, exportedAt: new Date().toISOString(), data: state };
+  // المفتاح ما بيطلع بالنسخة (مشان ما يوصل لحدا إذا شاركت الملف)
+  const data = { ...state, settings: { ...state.settings, ai: { ...(state.settings.ai || {}), key: '' } } };
+  return { app: 'mizaniyati', version: DATA_VERSION, exportedAt: new Date().toISOString(), data };
 }
 export function isBackup(p) {
   return Boolean(p && p.app === 'mizaniyati' && p.data && Array.isArray(p.data.transactions) && Array.isArray(p.data.accounts));

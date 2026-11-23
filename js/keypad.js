@@ -5,8 +5,10 @@ import { store, uid, catLabel } from './store.js';
 import { CURRENCIES, fmt, fmtNumber, rateOf, fromUSD } from './money.js';
 import { debtRemaining } from './calc.js';
 import { creditGoalForDebt, uncreditGoal } from './planner.js';
-import { todayISO, dayLabel } from './dates.js';
+import { todayISO, dayLabel, addDays } from './dates.js';
 import { openTxForm, accountOpts } from './forms.js';
+import { orderedCats, frequentItems } from './smart.js';
+import { learnNote } from './parse.js';
 
 const TYPES = [
   { value: 'expense', label: 'مصروف', icon: 'arrowDown' },
@@ -43,6 +45,8 @@ export function openAddSheet(prefill = {}) {
     recurringId: prefill.recurringId || null,
     debtId: prefill.debtId || null,
     showNote: Boolean(prefill.note),
+    showDate: false,
+    focusNote: false,
   };
   // فئة سداد الدين: بتطلع أسماء الناس، والعملية بتنسجل كدفعة على دينهم
   const DEBT_CAT = { income: 'inc_debt', expense: 'cat_debtpay' };
@@ -83,9 +87,11 @@ export function openAddSheet(prefill = {}) {
       refreshAmount();
     }
 
+    let catScrollX = null;
     function render() {
       const s = store.state;
-      const cats = s.categories.filter((c) => c.type === d.type);
+      // الفئات: ترتيبك، والأكتر استعمالاً أول
+      const cats = orderedCats(s, d.type);
       if (!cats.some((c) => c.id === d.categoryId)) d.categoryId = null;
       valEl = h('div', { class: 'val' });
       exprEl = h('div', { class: 'expr' });
@@ -94,14 +100,35 @@ export function openAddSheet(prefill = {}) {
       const catGrid = h('div', { class: 'cat-scroll', role: 'group', 'aria-label': 'الفئة' },
         cats.map((c) => h('button', {
           type: 'button', class: 'cat-choice', 'aria-pressed': String(c.id === d.categoryId),
-          onclick: (e) => {
+          onclick: () => {
             haptic('select');
-            const wasDebt = debtMode();
             d.categoryId = c.id;
-            if (wasDebt || debtMode()) { render(); return; }
-            for (const b of catGrid.children) b.setAttribute('aria-pressed', String(b === e.currentTarget));
+            catScrollX = catGrid.scrollLeft;
+            render();
           },
         }, badgeWithTint(c), h('span', null, c.name))));
+      if (catScrollX != null) requestAnimationFrame(() => { catGrid.scrollLeft = catScrollX; });
+
+      // الأغراض اللي بتشتريها كتير بهالفئة: كبسة بتعبّي المبلغ والملاحظة
+      const items = !debtMode() ? frequentItems(s, d.categoryId, { limit: 8 }) : [];
+      const itemsRow = items.length
+        ? h('div', { class: 'kp-items', role: 'group', 'aria-label': 'أغراض بتتكرر' }, items.map((it) => {
+          const itAcc = s.accounts.find((a) => a.id === it.accountId);
+          const on = d.note === it.note && String(evaluate(d.expr)) === String(it.amount);
+          return h('button', {
+            type: 'button', class: 'chip', 'aria-pressed': String(on),
+            onclick: () => {
+              haptic('select');
+              d.note = it.note;
+              d.showNote = true;
+              d.expr = String(it.amount);
+              if (itAcc) d.accountId = itAcc.id;
+              catScrollX = catGrid.scrollLeft;
+              render();
+            },
+          }, it.note, h('b', null, fmt(it.amount, itAcc?.currency || 'USD', { reveal: true })));
+        }))
+        : null;
 
       // مين رجّعلك / لمين سددت
       let peopleRow = null;
@@ -120,7 +147,23 @@ export function openAddSheet(prefill = {}) {
       }
 
       const noteInput = d.showNote
-        ? h('input', { type: 'text', value: d.note, placeholder: 'ملاحظة (اختياري)', oninput: (e) => { d.note = e.target.value; }, style: { marginBottom: '10px' } })
+        ? h('input', {
+          type: 'text', class: 'kp-note', value: d.note, placeholder: 'شو هو؟ (اختياري)', enterkeyhint: 'done',
+          oninput: (e) => { d.note = e.target.value; },
+          onkeydown: (e) => { if (e.key === 'Enter') { e.preventDefault(); e.target.blur(); } },
+        })
+        : null;
+      if (noteInput && d.focusNote) { d.focusNote = false; requestAnimationFrame(() => noteInput.focus()); }
+
+      // التاريخ: كبسة بتفتح «اليوم، أمس، قبل يومين»، وبلا كيبورد
+      const today = todayISO();
+      const dateRow = d.showDate
+        ? h('div', { class: 'kp-dates', role: 'group', 'aria-label': 'التاريخ' },
+          [['اليوم', today], ['أمس', addDays(today, -1)], ['قبل يومين', addDays(today, -2)]].map(([label, v]) => h('button', {
+            type: 'button', class: 'chip', 'aria-pressed': String(d.date === v),
+            onclick: () => { haptic('select'); d.date = v; d.showDate = false; render(); },
+          }, label)),
+          h('button', { type: 'button', class: 'chip', onclick: () => openDatePicker({ value: d.date, onPick: (v) => { d.date = v; d.showDate = false; render(); } }) }, icon('calendar', 14), 'يوم تاني'))
         : null;
 
       const key = (label, k, cls = '') => h('button', { type: 'button', class: `key ${cls}`.trim(), onclick: () => press(k), 'aria-label': k === 'del' ? 'امسح' : String(label) }, label);
@@ -143,13 +186,21 @@ export function openAddSheet(prefill = {}) {
             onclick: () => openPicker({ title: 'المحفظة', options: accountOpts(), value: d.accountId, onPick: (v) => { d.accountId = v; render(); } }),
           }, icon('wallet', 16), acc?.name || ''),
           h('button', {
-            type: 'button', class: 'meta-chip', 'aria-label': `التاريخ: ${dayLabel(d.date)}`,
-            onclick: () => openDatePicker({ value: d.date, onPick: (v) => { d.date = v; render(); } }),
+            type: 'button', class: `meta-chip${d.date !== today ? ' on' : ''}`, 'aria-label': `التاريخ: ${dayLabel(d.date)}`, 'aria-expanded': String(d.showDate),
+            onclick: () => { haptic('tap'); d.showDate = !d.showDate; render(); },
           }, icon('calendar', 16), dayLabel(d.date)),
-          h('button', { type: 'button', class: 'meta-chip', onclick: () => { d.showNote = !d.showNote; render(); } }, icon('note', 16), d.note ? 'الملاحظة' : 'ملاحظة'),
+          h('button', {
+            type: 'button', class: `meta-chip${d.note ? ' on' : ''}`,
+            onclick: () => {
+              if (!d.showNote) { d.showNote = true; d.focusNote = true; } else if (!d.note) d.showNote = false; else d.focusNote = true;
+              render();
+            },
+          }, icon('note', 16), d.note ? (d.note.length > 12 ? `${d.note.slice(0, 12)}…` : d.note) : 'ملاحظة'),
           h('button', { type: 'button', class: 'meta-chip', 'aria-label': 'تفاصيل أكتر: سعر الصرف وغيره', onclick: () => more() }, icon('sliders', 16))),
+        dateRow,
         noteInput,
         catGrid,
+        itemsRow,
         peopleRow,
         h('div', { class: 'keypad' },
           key('7', '7'), key('8', '8'), key('9', '9'), key(icon('backspace', 22), 'del', 'op'),
@@ -186,7 +237,7 @@ export function openAddSheet(prefill = {}) {
         note: d.note.trim(), usd: amount / rate, createdAt: Date.now(),
         ...(d.sourceId ? { sourceId: d.sourceId } : {}), ...(d.recurringId ? { recurringId: d.recurringId } : {}),
       };
-      store.update((x) => { x.transactions.push(tx); });
+      store.update((x) => { x.transactions.push(tx); learnNote(x, tx.note, tx.categoryId); });
       close();
       haptic('success');
       const c = s.categories.find((x) => x.id === categoryId);

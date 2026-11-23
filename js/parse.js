@@ -14,7 +14,7 @@ export function normalizeAr(s) {
 }
 
 const INCOME_WORDS = new Set(['راتب', 'الراتب', 'دخل', 'قبضت', 'استلمت', 'وصلني', 'اجاني', 'اجتني', 'ربح', 'ارباح', 'سداد', 'رجعلي']);
-const NOTE_DROP = /^(\$|₺|دولار|دولارات|بالدولار|ترك|تركي|تركيه|بالتركي|سوري|سوريه|بالسوري|ليره|ليرات|بالليره|ل\.?س\.?|tl|usd|try|syp|الف|الاف|مليون|ب|على|عل)$/;
+const NOTE_DROP = /^(\$|₺|دولار|دولارات|بالدولار|ترك|تركي|تركيه|بالتركي|سوري|سوريه|بالسوري|ليره|ليرات|بالليره|ل\.?س\.?|tl|usd|try|syp|الف|الاف|مليون|ب|على|عل|نص|ونص|نصف|ونصف|ربع|وربع|حق|حقها|حقه|بس|تقريبا)$/;
 
 function variants(tok) {
   const out = [tok];
@@ -29,13 +29,25 @@ function aliasesOf(c) {
   return [...(c.aliases || []), ...String(c.name).split(/\s+/)].map(normalizeAr).filter((a) => a.length >= 2);
 }
 
-function matchCategory(tokens, cats) {
+/*
+ * الفئة من الكلمات: أول شي اللي تعلّمه التطبيق منك (كلمة سجّلتها قبل بفئة)،
+ * بعدين قاموس الفئة (كلمة أو عبارة متل «لحم بعجين»)، وآخر شي أول الكلمة («شاورمات» ← شاورما).
+ */
+function matchCategory(tokens, cats, learned = null) {
+  const ids = new Set(cats.map((c) => c.id));
+  const joined = ` ${tokens.join(' ')} `;
+  for (const c of cats) {
+    for (const a of aliasesOf(c)) if (a.includes(' ') && joined.includes(` ${a} `)) return { cat: c, token: a };
+  }
   let prefix = null;
   for (const tok of tokens) {
     for (const v of variants(tok)) {
       if (v.length < 2) continue;
+      const L = learned?.[v];
+      if (L && ids.has(L.c)) return { cat: cats.find((c) => c.id === L.c), token: tok, learned: true };
       for (const c of cats) {
         for (const a of aliasesOf(c)) {
+          if (a.includes(' ')) continue;
           if (v === a) return { cat: c, token: tok };
           if (!prefix && a.length >= 3 && v.length > a.length && v.startsWith(a)) prefix = { cat: c, token: tok };
         }
@@ -43,6 +55,91 @@ function matchCategory(tokens, cats) {
     }
   }
   return prefix;
+}
+
+/* ---------- التعلّم من تسجيلاتك ---------- */
+// كلمات الملاحظة اللي إلها معنى (مو أرقام ولا عملات ولا أفعال عامة)
+export function noteTokens(note) {
+  return normalizeAr(note).replace(/[^\p{L}\s]/gu, ' ').split(/\s+/)
+    .map((t) => t.replace(/^و(?=...)/, ''))
+    .filter((t) => t.length >= 3 && !STOP.has(t) && !NOTE_DROP.test(t) && !STARTERS.has(t) && !classifyNum(t));
+}
+
+// بعد كل تسجيل: «شوكولاتة» بفئة السناكات، فالمرة الجاية بتنحط فيها لحالها
+export function learnNote(s, note, categoryId) {
+  if (!note || !categoryId || categoryId === 'cat_other' || categoryId === 'inc_other') return;
+  const L = s.settings.learned || (s.settings.learned = {});
+  for (const t of noteTokens(note).slice(0, 4)) {
+    const cur = L[t];
+    if (!cur) L[t] = { c: categoryId, n: 1 };
+    else if (cur.c === categoryId) cur.n = Math.min(50, (cur.n || 1) + 1);
+    else if ((cur.n || 1) > 2) cur.n -= 1;
+    else L[t] = { c: categoryId, n: 1 };
+  }
+  const keys = Object.keys(L);
+  if (keys.length > 800) for (const k of keys.slice(0, keys.length - 800)) delete L[k];
+}
+
+// اللي تعلّمه التطبيق + ملاحظات العمليات القديمة (محسوبة مرة لكل تغيير)
+let vocabMemo = null;
+export function vocabulary(state) {
+  const stamp = `${state.transactions.length}|${Object.keys(state.settings.learned || {}).length}|${state.transactions.at(-1)?.id || ''}`;
+  if (vocabMemo && vocabMemo.stamp === stamp && vocabMemo.state === state) return vocabMemo.map;
+  const counts = new Map();
+  for (const t of state.transactions) {
+    if (!t.note || !t.categoryId || t.categoryId === 'cat_other' || t.categoryId === 'inc_other' || t.type === 'transfer' || t.type === 'debt') continue;
+    for (const tok of noteTokens(t.note)) {
+      const m = counts.get(tok) || new Map();
+      m.set(t.categoryId, (m.get(t.categoryId) || 0) + 1);
+      counts.set(tok, m);
+    }
+  }
+  const map = {};
+  for (const [tok, m] of counts) {
+    const [c, n] = [...m].sort((a, b) => b[1] - a[1])[0];
+    map[tok] = { c, n };
+  }
+  Object.assign(map, state.settings.learned || {});
+  vocabMemo = { stamp, state, map };
+  return map;
+}
+
+/* ---------- تنظيف كلام المايك ---------- */
+// المايك بأندرويد أحياناً بيكرر: «70 ليرة 70 ليرة تركي» ← «70 ليرة تركي»
+export function cleanSpeech(text) {
+  const words = String(text || '').split(/\s+/).filter(Boolean);
+  const key = (w) => normalizeAr(toLatinDigits(w));
+  let changed = true;
+  while (changed) {
+    changed = false;
+    outer: for (let len = Math.floor(words.length / 2); len >= 1; len--) {
+      for (let i = 0; i + 2 * len <= words.length; i++) {
+        const a = words.slice(i, i + len).map(key).join(' ');
+        const b = words.slice(i + len, i + 2 * len).map(key).join(' ');
+        if (a === b && (len >= 2 || /\d/.test(a))) { words.splice(i + len, len); changed = true; break outer; }
+      }
+    }
+  }
+  return words.join(' ');
+}
+
+// دمج مقاطع المايك: إذا المقطع الجديد بيكمّل اللي قبله (نفس البداية) بياخد محله، وإذا مكرر بينشال
+export function mergeSpeech(segments) {
+  const out = [];
+  const k = (s) => normalizeAr(toLatinDigits(s)).replace(/[^\p{L}\p{N}\s]/gu, '').replace(/\s+/g, ' ').trim();
+  for (const raw of segments) {
+    const s = String(raw || '').trim();
+    if (!s) continue;
+    const n = k(s);
+    if (!n) continue;
+    const last = out.length ? k(out[out.length - 1]) : null;
+    if (last != null) {
+      if (n === last || last.endsWith(n) || last.includes(n)) continue;
+      if (n.startsWith(last) || n.includes(last)) { out[out.length - 1] = s; continue; }
+    }
+    out.push(s);
+  }
+  return cleanSpeech(out.join(' '));
 }
 
 function liraGuess(state) {
@@ -76,6 +173,7 @@ function readNumber(words, start) {
   let total = 0;
   let cur = 0;
   let any = false;
+  let scale = 1; // آخر خانة انذكرت: «مية ونص» = 150، «ألف ونص» = 1500، «عشرة ونص» = 10.5
   let j = start;
   while (j < words.length) {
     const w = normalizeAr(words[j]);
@@ -88,10 +186,11 @@ function readNumber(words, start) {
       const isMultiplier = t.kind === 'mult' || (t.kind === 'thousand' && t.value === 1000) || (t.kind === 'hundred' && t.value === 100 && cur > 0 && cur < 10);
       if (!isMultiplier) break;
     }
-    if (t.kind === 'unit' || t.kind === 'teen' || t.kind === 'ten' || t.kind === 'frac') cur += t.value;
-    else if (t.kind === 'hundred') cur = t.value === 100 && cur > 0 && cur < 10 ? cur * 100 : cur + t.value;
-    else if (t.kind === 'thousand') { total += t.value === 1000 ? (cur || 1) * 1000 : t.value; cur = 0; }
-    else if (t.kind === 'mult') { total += (cur || 1) * t.value; cur = 0; }
+    if (t.kind === 'unit' || t.kind === 'teen' || t.kind === 'ten') { cur += t.value; if (scale > 100) scale = 1; }
+    else if (t.kind === 'frac') { total += t.value * scale; any = true; j += 1; break; }
+    else if (t.kind === 'hundred') { cur = t.value === 100 && cur > 0 && cur < 10 ? cur * 100 : cur + t.value; scale = 100; }
+    else if (t.kind === 'thousand') { total += t.value === 1000 ? (cur || 1) * 1000 : t.value; cur = 0; scale = 1000; }
+    else if (t.kind === 'mult') { total += (cur || 1) * t.value; cur = 0; scale = t.value; }
     any = true;
     j += 1;
   }
@@ -99,7 +198,13 @@ function readNumber(words, start) {
 }
 // «مية وخمسين تركي» ← «150 تركي»
 export function wordsToDigits(text) {
-  const words = String(text).split(/\s+/).filter(Boolean);
+  // «بعشرين» و«ب50» ← «ب 20»، «ب 50»
+  const words = String(text).split(/\s+/).filter(Boolean).flatMap((w) => {
+    const n = normalizeAr(w);
+    if (/^ب\d/.test(n)) return ['ب', w.replace(/^بـ?/, '')];
+    if (/^بـ?.{3,}/.test(n) && classifyNum(n.replace(/^بـ?/, ''))) return ['ب', w.replace(/^بـ?/, '')];
+    return [w];
+  });
   const out = [];
   let i = 0;
   while (i < words.length) {
@@ -125,8 +230,25 @@ function detectCurrency(norm) {
   return null;
 }
 
+// «مبارح» و«أول مبارح»: تاريخ العملية
+function dateShift(norm) {
+  // «ومبارح» و«فمبارح» متل «مبارح»
+  const t = ` ${String(norm).split(/\s+/).map((w) => w.replace(/^[وف](?=.{3})/, '')).join(' ')} `;
+  if (/\s(اول|قبل)\s(ا?مبارح|امس|البارحه)\s/.test(t)) return -2;
+  if (/\s(ا?مبارح|امس|البارحه|مبارحه)\s/.test(t)) return -1;
+  return null;
+}
+function shiftDate(n) {
+  const d = new Date();
+  d.setDate(d.getDate() + n);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+const DEBT_IN_WORDS = /(^|\s)(رجعلي|رجعتلي|ردلي|رد|سدد|سددلي|دفعلي|عطاني|اعطاني|رجع|رجعت)(\s|$)/;
+const DEBT_OUT_WORDS = /(^|\s)(سددت|رجعت|رديت|دفعت|عطيت|اعطيت|وفيت|سددتله|رجعتله)(\s|$)/;
+
 export function parseMulti(text, state) {
-  const latin = wordsToDigits(toLatinDigits(String(text || '')));
+  const learned = vocabulary(state);
+  const latin = wordsToDigits(toLatinDigits(cleanSpeech(String(text || ''))));
   const rawWords = latin.replace(/[،,؛;.!؟?\n]+/g, ' ، ').split(/\s+/).filter(Boolean);
   // نقسم لجمل: عند الفواصل، أو عند فعل جديد بعد ما صار في رقم
   const clauses = [];
@@ -144,13 +266,19 @@ export function parseMulti(text, state) {
   // السياق: جمل بلا أرقام (متل «عزمت أخوي عمر على طبخة») والعملة إذا انذكرت مرة وحدة
   let contextCat = null;
   const globalCurs = new Set();
+  let globalShift = null;
   for (const c of clauses) {
     const norm = normalizeAr(c.join(' '));
     const cur = detectCurrency(norm);
     if (cur) globalCurs.add(cur);
+    // «مبارح» بأول الكلام بتنطبق على كل اللي بعدها
+    if (c === clauses[0]) globalShift = dateShift(c.slice(0, 3).map((w) => normalizeAr(w)).join(' '));
     for (const w of c) { const k = normalizeAr(w).replace(/^و(?=..)/, ''); if (CONTEXT[k]) contextCat = CONTEXT[k]; }
   }
   const globalCur = globalCurs.size === 1 ? [...globalCurs][0] : null;
+  // أسماء الناس اللي إلك أو عليك دين عندهم (للسداد بالصوت)
+  const openDebts = (state.debts || []).filter((d) => (Number(d.amount) || 0) - (d.payments || []).reduce((s, p) => s + (Number(p.amount) || 0), 0) > 0.005)
+    .map((d) => ({ d, names: normalizeAr(d.person).split(/\s+/).filter((x) => x.length >= 2) }));
 
   const def = state.accounts.find((a) => a.id === state.settings.defaultAccountId) || state.accounts[0];
   const items = [];
@@ -159,7 +287,8 @@ export function parseMulti(text, state) {
   // كلمة بتبلّش بـ «و» بتفصل بين عمليتين («مواصلات 50 وأكل 30»)، إلا إذا الكلمة نفسها معروفة متل «وجبة»
   const isConnector = (w) => {
     const n = normalizeAr(w);
-    return n === 'و' || (n.length > 2 && n.startsWith('و') && !allAliases.has(n));
+    if (/^و(نص|نصف|ربع)$/.test(n)) return false; // «مية ونص» مو عمليتين
+    return n === 'و' || (n.length > 2 && n.startsWith('و') && !allAliases.has(n) && !learned[n.slice(1)] && !learned[n]);
   };
   for (const raw of clauses) {
     // «و20» ← «و» + «20»
@@ -178,6 +307,9 @@ export function parseMulti(text, state) {
       let amount = Number(clause[ni].replace(/,/g, ''));
       const next = normalizeAr(clause[ni + 1] || '');
       if (/^(الف|الاف)$/.test(next)) amount *= 1000;
+      // «100 ونص» = 150، «1000 ونص» = 1500
+      const half = clause.slice(ni + 1, ni + 3).map((w) => normalizeAr(w)).join(' ');
+      if (/^(ونص|و نص|ونصف)(\s|$)/.test(half)) amount += amount >= 1000 ? 500 : amount >= 100 ? 50 : 0.5;
       if (!(amount > 0)) return;
       const segment = [...before, clause[ni], ...after];
       const segNorm = normalizeAr(segment.join(' '));
@@ -186,11 +318,19 @@ export function parseMulti(text, state) {
       const tokens = [...toTokens(after), ...toTokens(before)];
       const incomeHint = tokens.some((t) => INCOME_WORDS.has(t)) || [...clauseNorm.split(/\s+/)].some((t) => INCOME_WORDS.has(t));
       const cats = state.categories.filter((c) => c.type === (incomeHint ? 'income' : 'expense'));
-      let match = matchCategory(tokens, cats);
-      if (!match && !incomeHint) match = matchCategory(tokens, state.categories.filter((c) => c.type === 'income'));
+      let match = matchCategory(tokens, cats, learned);
+      if (!match && !incomeHint) match = matchCategory(tokens, state.categories.filter((c) => c.type === 'income'), learned);
       let categoryId = match?.cat.id || null;
       let type = match ? match.cat.type : incomeHint ? 'income' : 'expense';
-      if (type === 'expense' && contextCat && (!categoryId || (WEAK_UNDER[contextCat] || []).includes(categoryId))) categoryId = contextCat;
+      if (type === 'expense' && contextCat && !match?.learned && (!categoryId || (WEAK_UNDER[contextCat] || []).includes(categoryId))) categoryId = contextCat;
+      // سداد دين: اسم حدا إلك أو عليك عنده دين، مع «رجّعلي» أو «سددت»
+      let debtId = null;
+      const clauseTokens = new Set(clauseNorm.split(/\s+/).map((t) => t.replace(/^[ول](?=..)/, '')));
+      const hitDebt = openDebts.find((x) => x.names.some((nm) => clauseTokens.has(nm) || clauseNorm.includes(` ${nm} `) || clauseNorm.startsWith(`${nm} `)));
+      if (hitDebt) {
+        if (hitDebt.d.direction === 'theyOwe' && (DEBT_IN_WORDS.test(clauseNorm) || incomeHint)) { type = 'income'; categoryId = 'inc_debt'; debtId = hitDebt.d.id; }
+        else if (hitDebt.d.direction === 'iOwe' && DEBT_OUT_WORDS.test(clauseNorm)) { type = 'expense'; categoryId = 'cat_debtpay'; debtId = hitDebt.d.id; }
+      }
       if (!categoryId) categoryId = type === 'income' ? 'inc_other' : 'cat_other';
       let cur = detectCurrency(segNorm) || clauseCur || globalCur;
       if (cur === 'LIRA') cur = liraGuess(state);
@@ -204,8 +344,16 @@ export function parseMulti(text, state) {
         .filter((w, i) => !/\d/.test(w) && !STOP.has(normalizeAr(w).replace(/^و(?=..)/, '')) && !NOTE_DROP.test(normalizeAr(w)) && !(i === 0 && STARTERS.has(normalizeAr(w))))
         .map((w) => (isConnector(w) && allAliases.has(normalizeAr(w).slice(1)) ? w.slice(1) : w));
       // إذا الملاحظة بس اسم الفئة («مواصلات») منخليها فاضية
-      const note = noteWords.every((w) => catWords.has(normalizeAr(w))) ? '' : noteWords.join(' ').replace(/\s+/g, ' ').trim();
-      items.push({ type, amount, accountId: account.id, currency: account.currency, categoryId, note, matched: Boolean(match) || Boolean(contextCat && type === 'expense') });
+      const dropDate = (w) => /^[وف]?(ا?مبارح|امس|البارحه|اول|قبل|اليوم)$/.test(normalizeAr(w));
+      const noteClean = noteWords.filter((w) => !dropDate(w) && !(hitDebt && debtId && hitDebt.names.includes(normalizeAr(w).replace(/^[ول](?=..)/, ''))));
+      const note = noteClean.every((w) => catWords.has(normalizeAr(w))) ? '' : noteClean.join(' ').replace(/\s+/g, ' ').trim();
+      // التاريخ: من كلمات هالعملية، أو من أول الجملة («مبارح صرفت 50 و30»)
+      const sh = dateShift(segNorm) ?? dateShift(clause.slice(0, 3).map((w) => normalizeAr(w)).join(' ')) ?? globalShift;
+      items.push({
+        type, amount, accountId: account.id, currency: account.currency, categoryId, note, debtId,
+        date: sh != null ? shiftDate(sh) : null,
+        matched: Boolean(match) || Boolean(debtId) || Boolean(contextCat && type === 'expense'),
+      });
     });
   }
   return items;
@@ -235,9 +383,10 @@ export function parseQuick(text, state) {
   const incomeHint = tokens.some((t) => INCOME_WORDS.has(t));
   const expenseCats = state.categories.filter((c) => c.type === 'expense');
   const incomeCats = state.categories.filter((c) => c.type === 'income');
+  const learned = vocabulary(state);
   const match = incomeHint
-    ? matchCategory(tokens, incomeCats)
-    : matchCategory(tokens, expenseCats) || matchCategory(tokens, incomeCats);
+    ? matchCategory(tokens, incomeCats, learned)
+    : matchCategory(tokens, expenseCats, learned) || matchCategory(tokens, incomeCats, learned);
   const type = match ? match.cat.type : incomeHint ? 'income' : 'expense';
   const categoryId = match?.cat.id || (type === 'income' ? 'inc_other' : 'cat_other');
 

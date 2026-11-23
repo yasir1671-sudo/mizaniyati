@@ -124,24 +124,50 @@ export function linkedDebtIds(state) {
  * الفواتير الثابتة الباقية هالشهر: الاشتراكات اللي ما اندفعت (بمواعيدها)،
  * أو باقي ميزانية الفئة الثابتة إذا أكبر. الاشتراك «المدفوع من قبل» بينحسب كأنه انصرف.
  */
-export function billsLeft(state, today) {
+/*
+ * قدّيش لازم ينحجز لفئة ثابتة لآخر الشهر:
+ * - ميزانية استثنائية إلها: المبلغ اللي حطيته.
+ * - شهر ناقص (في ميزانية استثنائية بس مو لهالفئة) أو اقتراح جديد: الميزانية على الأيام الباقية.
+ * - شهر عادي: الميزانية كلها ناقص اللي اندفع.
+ * والاشتراك اللي ما اندفع بيضل محجوز بكل الأحوال.
+ */
+export function fixedNeed(state, c, today, { prorate = null, recs = null, ms = null } = {}) {
   const key = today.slice(0, 7);
-  const ms = monthStats(state, key);
+  const d = parseISO(today);
+  const dim = daysInMonth(d.getFullYear(), d.getMonth());
+  const share = (dim - d.getDate() + 1) / dim;
+  const o = monthOverride(state, key);
+  const R = recs || recurringStatus(state, today);
+  const mine = R.filter((x) => x.r.categoryId === c.id);
+  const unpaid = mine.filter((x) => !x.paid);
+  const unpaidUSD = unpaid.reduce((s, x) => s + x.usd, 0);
+  const prepaid = mine.filter((x) => x.prepaid).reduce((s, x) => s + x.usd, 0);
+  const spent = (ms || monthStats(state, key)).byCat.get(c.id) || 0;
+  const base = Number(c.budget) || 0;
+  // أول شهر بلّشت فيه بالنص: «تكملة شهر» بس، فالثابتة على الأيام من يوم ما بلّشت
+  const started = state.createdAt ? new Date(state.createdAt) : null;
+  const startKey = started ? `${started.getFullYear()}-${String(started.getMonth() + 1).padStart(2, '0')}` : null;
+  const startShare = startKey === key && started.getDate() > 1 ? (dim - started.getDate() + 1) / dim : null;
+  const rest = Math.max(0, base - spent - prepaid);
+  let fromBudget;
+  if (!prorate && o && o[c.id] != null) fromBudget = Math.max(0, Number(o[c.id]) - spent - prepaid);
+  else if (prorate || (o && o[c.id] == null)) fromBudget = Math.min(rest, base * share);
+  else if (startShare != null) fromBudget = Math.min(rest, base * startShare);
+  else fromBudget = rest;
+  return { spent, prepaid, unpaid, unpaidUSD, need: Math.max(unpaidUSD, fromBudget), budget: base };
+}
+
+export function billsLeft(state, today) {
+  const ms = monthStats(state, today.slice(0, 7));
   const recs = recurringStatus(state, today);
   const items = [];
   let total = 0;
   for (const c of state.categories) {
     if (c.type !== 'expense' || !c.fixed) continue;
-    const mine = recs.filter((x) => x.r.categoryId === c.id);
-    const unpaid = mine.filter((x) => !x.paid);
-    const unpaidUSD = unpaid.reduce((s, x) => s + x.usd, 0);
-    const prepaidUSD = mine.filter((x) => x.prepaid).reduce((s, x) => s + x.usd, 0);
-    const spent = ms.byCat.get(c.id) || 0;
-    const fromBudget = Math.max(0, budgetFor(state, c, key) - spent - prepaidUSD);
-    const left = Math.max(unpaidUSD, fromBudget);
-    for (const x of unpaid) items.push({ kind: 'bill', name: x.r.name, usd: x.usd, day: x.dueDay, rec: x.r, cat: c });
-    if (left - unpaidUSD > 0.5) items.push({ kind: 'billBudget', name: c.name, usd: left - unpaidUSD, day: null, cat: c });
-    total += left;
+    const F = fixedNeed(state, c, today, { recs, ms });
+    for (const x of F.unpaid) items.push({ kind: 'bill', name: x.r.name, usd: x.usd, day: x.dueDay, rec: x.r, cat: c });
+    if (F.need - F.unpaidUSD > 0.5) items.push({ kind: 'billBudget', name: c.name, usd: F.need - F.unpaidUSD, day: null, cat: c });
+    total += F.need;
   }
   return { total, items };
 }

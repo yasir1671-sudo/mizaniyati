@@ -1,6 +1,6 @@
 // باقي الشهر: توزيع المصاري اللي معك (الأساسيات أول)، وخريطة الشهر يوم بيوم
 import { daysInMonth, parseISO, addMonths, iso } from './dates.js';
-import { cashMonth, budgetFor, budgetTotals, dailyAllowance, monthOverride, itemMonth, sortTx } from './calc.js';
+import { cashMonth, budgetFor, budgetTotals, dailyAllowance, monthOverride, itemMonth, sortTx, fixedNeed, monthStats } from './calc.js';
 import { recurringStatus, sourceParts } from './income.js';
 
 export const isEssential = (c) => Boolean(c.fixed || c.essential);
@@ -30,7 +30,18 @@ export function restOfMonth(state, today, { extraUSD = 0, base = 'current' } = {
   const cash = cashMonth(state, today);
   const spentMap = flexSpent(state, key);
   const override = base === 'current' ? monthOverride(state, key) : null;
-  const pool = cash.pool - extraUSD;
+  // الثابتة (فواتير، صدقة ثابتة…): بشهر ناقص بتنحسب على الأيام الباقية، وفيك تعدّلها
+  const recs = recurringStatus(state, today);
+  const ms = monthStats(state, key);
+  const pool0 = cash.pool + cash.bills - extraUSD;
+  const fixed = state.categories.filter((c) => c.type === 'expense' && c.fixed).map((c) => {
+    const F = fixedNeed(state, c, today, { prorate: base === 'original' ? true : null, recs, ms });
+    return { c, budget: base === 'original' ? F.budget : budgetFor(state, c, key), spent: F.spent, prepaid: F.prepaid, unpaidUSD: F.unpaidUSD, need: F.need, alloc: 0, essential: true, fixed: true };
+  }).filter((x) => x.budget > 0 || x.spent > 0 || x.need > 0.5);
+  const fixedNeedSum = fixed.reduce((s, x) => s + x.need, 0);
+  let fixedAvail = Math.max(0, pool0);
+  for (const x of fixed) { x.alloc = Math.min(Math.round(x.need * 100) / 100, Math.max(0, fixedAvail)); fixedAvail -= x.alloc; }
+  const pool = pool0 - fixedNeedSum;
 
   const cats = state.categories.filter((c) => c.type === 'expense' && !c.fixed).map((c) => {
     const budget = base === 'original' ? Number(c.budget) || 0 : budgetFor(state, c, key);
@@ -58,7 +69,7 @@ export function restOfMonth(state, today, { extraUSD = 0, base = 'current' } = {
   avail -= sum(disc, 'alloc');
 
   return {
-    key, dim, daysLeft, share, pool, cash, cats, ess, disc,
+    key, dim, daysLeft, share, pool, pool0, cash, cats, ess, disc, fixed, fixedNeed: fixedNeedSum,
     essNeed, discNeed, need: essNeed + discNeed,
     essAlloc: sum(ess, 'alloc'), discAlloc: sum(disc, 'alloc'),
     leftover: Math.max(0, avail), shortage: Math.max(0, essNeed + discNeed - Math.max(0, pool)),
@@ -69,10 +80,10 @@ export function restOfMonth(state, today, { extraUSD = 0, base = 'current' } = {
 // الميزانية الاستثنائية من التوزيع: المصروف لهلّق + المخصص لباقي الشهر
 export function overrideFrom(R, allocs = null) {
   const out = {};
-  for (const x of R.cats) {
-    const a = allocs ? Number(allocs[x.c.id]) || 0 : x.alloc;
-    out[x.c.id] = Math.round((x.spent + Math.max(0, a)) * 100) / 100;
-  }
+  const val = (x) => (allocs && allocs[x.c.id] != null ? Number(allocs[x.c.id]) || 0 : x.alloc);
+  for (const x of R.cats) out[x.c.id] = Math.round((x.spent + Math.max(0, val(x))) * 100) / 100;
+  // الثابتة: اللي اندفع + اللي «مدفوع من قبل» + المحجوز لباقي الشهر
+  for (const x of R.fixed || []) out[x.c.id] = Math.round((x.spent + x.prepaid + Math.max(0, val(x))) * 100) / 100;
   return out;
 }
 

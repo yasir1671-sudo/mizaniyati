@@ -20,19 +20,25 @@ export function openMonthBudgetSheet() {
     const cur = Rc?.cats.find((y) => y.c.id === x.c.id);
     allocs[x.c.id] = cur ? Math.round(cur.need) : x.alloc;
   }
+  for (const x of R0.fixed) {
+    const cur = Rc?.fixed.find((y) => y.c.id === x.c.id);
+    allocs[x.c.id] = Math.round(cur ? cur.need : x.alloc);
+  }
+  const available = R0.pool0;
   const nextLabel = monthLabel(addMonths(key, 1), { year: false });
 
   openSheet('ميزانية باقي الشهر', (body, close) => {
     const summary = h('div', { class: 'mb-summary' });
     const sumAlloc = () => Object.values(allocs).reduce((s, v) => s + (Number(v) || 0), 0);
+    const dailySum = () => R0.cats.reduce((s, x) => s + (Number(allocs[x.c.id]) || 0), 0);
     const refresh = () => {
       const used = sumAlloc();
-      const left = R0.pool - used;
+      const left = available - used;
       fill(summary, [
         h('div', { class: 'mb-top' },
-          h('div', null, h('small', null, 'معك لباقي الشهر'), h('strong', null, fmt(Math.max(0, R0.pool)))),
-          h('div', null, h('small', null, 'مصروف اليوم تقريباً'), h('strong', null, fmt(used / R0.daysLeft)))),
-        bar(R0.pool > 0 ? used / R0.pool : 1, left < -0.5 ? 'over' : left < 5 ? 'warn' : ''),
+          h('div', null, h('small', null, 'معك لباقي الشهر'), h('strong', null, fmt(Math.max(0, available)))),
+          h('div', null, h('small', null, 'مصروف اليوم تقريباً'), h('strong', null, fmt(dailySum() / R0.daysLeft)))),
+        bar(available > 0 ? used / available : 1, left < -0.5 ? 'over' : left < 5 ? 'warn' : ''),
         h('p', { class: `mb-note ${left < -0.5 ? 'bad' : ''}`.trim() }, left < -0.5
           ? `وزّعت أكتر من اللي معك بـ ${fmt(-left)}. خفّف شي من الثانويات.`
           : `وزّعت ${fmt(used)} على ${daysText(R0.daysLeft)}، وبيبقى ${fmt(left)} بلا تخصيص.`),
@@ -45,20 +51,27 @@ export function openMonthBudgetSheet() {
         oninput: (e) => { const n = parseAmount(e.target.value); allocs[x.c.id] = n > 0 ? n : 0; refresh(); },
       });
       const was = Math.round(x.need);
+      let sub = x.spent > 0.5 ? `صرفت ${fmt(x.spent)}، والأصلية لباقي الشهر ${fmt(was)}` : `الأصلية لباقي الشهر ${fmt(was)}`;
+      if (x.fixed) {
+        sub = x.unpaidUSD > 0.5 ? `في اشتراكات ما اندفعت بـ ${fmt(x.unpaidUSD)}` : x.spent + x.prepaid > 0.5 ? `اندفع ${fmt(x.spent + x.prepaid)}` : `ميزانيتها ${fmt(x.budget)} بالشهر، يعني ${fmt(was)} لباقيه`;
+      }
       return h('div', { class: 'row' },
         badge(catIcon(x.c), catTint(x.c), 38),
         h('span', { class: 'row-main' },
           h('span', { class: 'row-title' }, catLabel(x.c)),
-          h('span', { class: 'row-sub wrap' }, x.spent > 0.5 ? `صرفت ${fmt(x.spent)}، والأصلية لباقي الشهر ${fmt(was)}` : `الأصلية لباقي الشهر ${fmt(was)}`)),
+          h('span', { class: 'row-sub wrap' }, sub)),
         h('span', { class: 'inline-money' }, '$', input));
     };
     const ess = R0.cats.filter((x) => x.essential);
     const disc = R0.cats.filter((x) => !x.essential);
+    const fixedRows = R0.fixed;
     refresh();
     fill(body, [
       h('p', { class: 'hint' }, `محسوبة على المصاري اللي معك فعلاً والجاي هالشهر، بعد الفواتير والالتزامات والادخار. الأساسيات بتاخد أول، والثانويات من اللي بيبقى. لـ ${monthLabel(key, { year: false })} بس: أول ${nextLabel} بترجع ميزانيتك الأصلية لحالها.`),
       summary,
       R0.essShort ? h('p', { class: 'result-line bad' }, 'المصاري ما بتكفي حتى الأساسيات. وزّعنا اللي معك على الأساسيات، والثانويات صفر.') : null,
+      fixedRows.length ? h('div', { class: 'field' }, h('span', { class: 'field-label' }, 'الثابتة (بتنحجز أول، ما بتدخل بمصروف اليوم)'), h('div', { class: 'rows sheet-rows' }, fixedRows.map(row)),
+        h('span', { class: 'field-hint' }, 'لأنك بلّشت بنص الشهر، منحسبها على الأيام الباقية. إذا كانت مدفوعة أو ما بدك تحجز لها، خليها صفر.')) : null,
       ess.length ? h('div', { class: 'field' }, h('span', { class: 'field-label' }, 'الأساسيات (بتنحجز أول)'), h('div', { class: 'rows sheet-rows' }, ess.map(row))) : null,
       disc.length ? h('div', { class: 'field' }, h('span', { class: 'field-label' }, 'الثانويات (من اللي بيبقى)'), h('div', { class: 'rows sheet-rows' }, disc.map(row))) : null,
       h('p', { class: 'field-hint' }, 'فيك تغيّر شو أساسي وشو ثانوي من الإعدادات ← الفئات.'),
@@ -68,7 +81,7 @@ export function openMonthBudgetSheet() {
 
     function save() {
       const used = sumAlloc();
-      if (used > R0.pool + 0.5 && R0.pool > 0) { haptic('warn'); toast('وزّعت أكتر من اللي معك. خفّف شي أول.', { kind: 'warn' }); return; }
+      if (used > available + 0.5 && available > 0) { haptic('warn'); toast('وزّعت أكتر من اللي معك. خفّف شي أول.', { kind: 'warn' }); return; }
       const override = overrideFrom(R0, allocs);
       const prev = store.state.settings.monthBudgets?.[key] || null;
       store.update((s) => { s.settings.monthBudgets = { ...(s.settings.monthBudgets || {}), [key]: override }; });
@@ -113,7 +126,7 @@ export function monthBudgetBanner(st) {
   const R = restOfMonth(st, today, { base: 'original' });
   return h('div', { class: 'banner col warn-banner' },
     h('div', { class: 'banner-row' }, h('span', { class: 'banner-ic' }, icon('alert', 22)),
-      h('p', null, `المصاري اللي معك (${fmt(Math.max(0, R.pool))}) أقل من ميزانية باقي الشهر (${fmt(R.need)}). رتّبها على اللي معك: الأساسيات أول، والثانويات من اللي بيبقى.`)),
+      h('p', null, `المصاري اللي معك (${fmt(Math.max(0, R.pool0))}) أقل من ميزانية باقي الشهر (${fmt(R.need + R.fixedNeed)}). رتّبها على اللي معك: الثابتة والأساسيات أول، والثانويات من اللي بيبقى.`)),
     h('div', { class: 'banner-actions' },
       h('button', { class: 'btn small', type: 'button', onclick: () => openMonthBudgetSheet() }, icon('sparkle', 16), 'رتّب باقي الشهر')));
 }
