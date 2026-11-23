@@ -1,9 +1,10 @@
 // خريطة الشهر: كل يوم شو فيه (دخل، فاتورة، شراء مثبّت)، وقدّيش بيبقى معك يوم بيوم
-import { h, icon, fill, haptic } from '../ui.js';
+import { h, icon, fill, haptic, openSheet } from '../ui.js';
+import { openAddSheet } from '../keypad.js';
 import { badge } from '../icons.js';
 import { store, catLabel, catIcon, catTint } from '../store.js';
 import { fmt } from '../money.js';
-import { todayISO, monthLabel, longDate, daysText, MONTHS, addMonths } from '../dates.js';
+import { todayISO, monthLabel, longDate, daysText, MONTHS, addMonths, countText } from '../dates.js';
 import { group, txRow, bar } from '../components.js';
 import { monthMap, restOfMonth } from '../month.js';
 import { openWhatIf } from '../whatif.js';
@@ -55,7 +56,7 @@ export function renderMonthMap({ open }) {
   const M = monthMap(st, today);
   const c = M.cash;
   const monthName = MONTHS[Number(M.key.slice(5)) - 1];
-  if (!selected || !selected.startsWith(M.key)) selected = today;
+  if (selected && !selected.startsWith(M.key)) selected = null;
 
   const out = [monthBudgetBanner(st)];
 
@@ -77,8 +78,7 @@ export function renderMonthMap({ open }) {
     out.push(h('p', { class: 'section-note' }, 'المصاري بتكفيك يوم بيوم لآخر الشهر، إذا ضليت على مصروف اليوم.'));
   }
 
-  // التقويم
-  const detail = h('section', { class: 'group' });
+  // التقويم: كبسة على يوم بتفتح تفاصيله بنافذة
   const gridEl = h('div', { class: 'mm-grid' });
   const [y, m] = M.key.split('-').map(Number);
   const offset = (new Date(y, m - 1, 1).getDay() + 1) % 7;
@@ -91,7 +91,7 @@ export function renderMonthMap({ open }) {
       cells.push(h('button', {
         type: 'button', class: `mm-day${dd.past ? ' past' : ''}${dd.isToday ? ' today' : ''}${dd.date === selected ? ' on' : ''}${neg ? ' neg' : ''}`,
         'aria-label': `${dd.day} ${monthName}`, 'aria-pressed': String(dd.date === selected),
-        onclick: () => { haptic('select'); selected = dd.date; drawGrid(); drawDetail(); },
+        onclick: () => { haptic('select'); selected = dd.date; drawGrid(); openDaySheet(dd); },
       },
       h('b', null, String(dd.day)),
       dd.past || dd.isToday
@@ -101,33 +101,38 @@ export function renderMonthMap({ open }) {
     }
     fill(gridEl, cells);
   };
-  const drawDetail = () => {
-    const dd = M.days.find((x) => x.date === selected) || M.days[M.td - 1];
-    const rows = [];
-    if (dd.past || dd.isToday) {
-      for (const t of dd.tx) rows.push(txRow(t, st));
-      if (!dd.tx.length) rows.push(h('p', { class: 'row-note' }, dd.isToday ? 'لسّا ما سجّلت شي اليوم.' : 'ما سجّلت شي بهاليوم.'));
-    }
-    for (const e of dd.events) rows.push(eventRow(e, open));
-    if (!dd.past) {
-      rows.push(h('div', { class: 'row mm-proj' },
-        h('span', { class: 'row-main' }, h('span', { class: 'row-title' }, dd.isToday ? 'باقي لك تصرف اليوم' : 'مصروف هاليوم المتوقع'),
-          h('span', { class: 'row-sub' }, `وبآخر اليوم بيبقى معك تقريباً ${fmt(dd.bal)}`)),
-        h('span', { class: 'row-end' }, h('span', { class: `amount ${dd.bal < -0.5 ? 'over' : ''}`.trim() }, fmt(dd.allow)))));
-    } else if (dd.spent > 0.5) {
-      rows.push(h('p', { class: 'row-note' }, `صرفت بهاليوم ${fmt(dd.spent)}.`));
-    }
-    fill(detail, [h('div', { class: 'group-head' }, h('h2', null, dd.isToday ? `اليوم، ${longDate(dd.date)}` : longDate(dd.date))), h('div', { class: 'rows' }, rows)]);
-  };
+  function openDaySheet(dd) {
+    openSheet(dd.isToday ? `اليوم، ${longDate(dd.date)}` : longDate(dd.date), (body, close) => {
+      const rows = [];
+      if (dd.past || dd.isToday) {
+        for (const t of dd.tx) rows.push(txRow(t, st));
+        if (!dd.tx.length) rows.push(h('p', { class: 'row-note' }, dd.isToday ? 'لسّا ما سجّلت شي اليوم.' : 'ما سجّلت شي بهاليوم.'));
+      }
+      for (const e of dd.events) rows.push(eventRow(e, (p) => { close(); setTimeout(() => open(p), 300); }));
+      const tiles = [];
+      if (!dd.past) {
+        tiles.push(h('div', { class: 'ba-tile' }, h('small', null, dd.isToday ? 'باقي لك تصرف اليوم' : 'مصروف هاليوم'), h('b', null, fmt(dd.allow)), h('span', null, 'على مصروف اليوم')));
+        tiles.push(h('div', { class: `ba-tile ${dd.bal < -0.5 ? 'bad' : ''}`.trim() }, h('small', null, 'بآخر اليوم بيبقى معك'), h('b', null, fmt(dd.bal)), h('span', null, 'تقريباً، بعد المحجوز')));
+      } else {
+        const n = dd.tx.filter((t) => t.type === 'expense').length;
+        tiles.push(h('div', { class: 'ba-tile' }, h('small', null, 'صرفت'), h('b', null, fmt(dd.spent)), h('span', null, n ? countText(n, ['مصروف واحد', 'مصروفين', 'مصاريف', 'مصروف']) : 'ولا مصروف')));
+        if (dd.income > 0.5) tiles.push(h('div', { class: 'ba-tile' }, h('small', null, 'دخل'), h('b', { class: 'income' }, fmt(dd.income)), h('span', null, '')));
+      }
+      fill(body, [
+        h('div', { class: `ba-grid${tiles.length === 1 ? ' one' : ''}` }, tiles),
+        rows.length ? h('div', { class: 'rows sheet-rows', style: { marginTop: '12px' } }, rows) : null,
+        dd.past || dd.isToday ? h('button', { class: 'btn secondary block', type: 'button', onclick: () => { close(); setTimeout(() => openAddSheet({ date: dd.date }), 300); } }, icon('plus', 18), 'سجّل مصروف بهاليوم') : null,
+      ]);
+    }, { onClose: () => { selected = null; drawGrid(); } });
+  }
   drawGrid();
-  drawDetail();
   out.push(h('section', { class: 'group mm-wrap' },
-    h('div', { class: 'group-head' }, h('h2', null, monthLabel(M.key)), h('span', { class: 'muted', style: { fontSize: '11.5px' } }, 'الرقم تحت اليوم: قدّيش صرفت')),
+    h('div', { class: 'group-head' }, h('h2', null, monthLabel(M.key)), h('span', { class: 'muted', style: { fontSize: '11.5px' } }, 'اضغط على أي يوم')),
     h('div', { class: 'mm-legend', 'aria-hidden': 'true' },
       [['income', 'دخل'], ['bill', 'فاتورة'], ['buy', 'شراء مثبّت'], ['commit', 'التزام']].map(([k, label]) => h('span', null, h('i', { class: `k-${k}` }), label))),
     h('div', { class: 'mm-grid mm-week', 'aria-hidden': 'true' }, WEEK.map((w) => h('span', null, w))),
-    gridEl));
-  out.push(detail);
+    gridEl,
+    h('p', { class: 'mm-foot' }, 'الرقم تحت اليوم: قدّيش صرفت فيه. النقط: شو جاي.')));
 
   // الجاي هالشهر بالترتيب
   const agenda = [];

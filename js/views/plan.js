@@ -3,12 +3,12 @@ import { h, icon, fill, openSheet, confirmSheet, toast, haptic } from '../ui.js'
 import { badge } from '../icons.js';
 import { store, catLabel, catIcon, catTint, AUTO_BUDGET_WEIGHTS, AUTO_BUDGET_SHARE } from '../store.js';
 import { CURRENCIES, fmt, parseAmount, toUSD } from '../money.js';
-import { currentMonth, monthLabel, SHORT_MONTHS, todayISO, daysText } from '../dates.js';
+import { currentMonth, monthLabel, SHORT_MONTHS, todayISO, daysText, countText } from '../dates.js';
 import { plan, expectedIncome, budgetTotals, budgetFor, monthOverride } from '../calc.js';
 import { buildPlan, goalsSummary, emergencySuggestion, scheduleText, statusClass } from '../planner.js';
 import { group, bar, emptyState, cashCard } from '../components.js';
 import { requirePin } from '../pin.js';
-import { openSourceForm, openItemForm, openConfirmForm, INCOME_KINDS } from '../forms.js';
+import { openSourceForm, openItemForm, openConfirmForm, openReorderSheet, INCOME_KINDS } from '../forms.js';
 import { openGoalForm, openDepositForm, movableSurplus, surplusGoal } from '../goals.js';
 import { openWhatIf } from '../whatif.js';
 import { monthBudgetBanner, openMonthBudgetSheet } from '../monthsheet.js';
@@ -288,10 +288,15 @@ function autoDistribute() {
   };
 }
 
+let showEmptyCats = false;
 function budgetGroup(st, refresh, refreshPage) {
   const key = currentMonth();
   const over = monthOverride(st, key);
-  const cats = st.categories.filter((c) => c.type === 'expense');
+  const all = st.categories.filter((c) => c.type === 'expense');
+  // بلا تعديل: الفئات اللي إلها ميزانية بترتيبك، واللي ما إلها مطوية تحت
+  const hasBudget = (c) => (Number(c.budget) || 0) > 0 || budgetFor(st, c, key) > 0;
+  const empty = edit ? [] : all.filter((c) => !hasBudget(c));
+  const cats = edit || showEmptyCats ? all : all.filter(hasBudget);
   const rows = cats.map((c) => {
     let end;
     const monthVal = budgetFor(st, c, key);
@@ -317,6 +322,10 @@ function budgetGroup(st, refresh, refreshPage) {
         sub ? h('span', { class: 'row-sub' }, sub) : null),
       end);
   });
+  if (!edit && empty.length) {
+    rows.push(h('button', { class: 'row more-row', type: 'button', onclick: () => { showEmptyCats = !showEmptyCats; refreshPage(); } },
+      showEmptyCats ? 'خبّي الفئات اللي بلا ميزانية' : `${countText(empty.length, ['فئة وحدة', 'فئتين', 'فئات', 'فئة'])} بلا ميزانية`, icon(showEmptyCats ? 'chevU' : 'chevD', 16)));
+  }
   if (edit) {
     rows.push(h('div', { class: 'row-actions' },
       h('button', {
@@ -336,7 +345,9 @@ function budgetGroup(st, refresh, refreshPage) {
     ? 'هي ميزانيتك الأصلية للشهور الجاية. هالشهر ماشي على الميزانية الاستثنائية (بالذهبي).'
     : 'المصاريف الثابتة بتنحسب لحالها. الباقي بيتوزّع على أيام الشهر، وبيطلع لك بالرئيسية كمصروف اليوم.'));
   return group('ميزانية الفئات بالدولار', rows, {
-    action: edit ? null : h('button', { class: 'btn small', type: 'button', onclick: () => startEdit(refreshPage) }, icon('edit', 16), 'عدّل الميزانية'),
+    action: edit ? null : h('span', { class: 'head-btns' },
+      h('button', { class: 'btn secondary small', type: 'button', 'aria-label': 'رتّب الفئات', onclick: () => openReorderSheet('expense') }, icon('sort', 16), 'رتّب'),
+      h('button', { class: 'btn small', type: 'button', onclick: () => startEdit(refreshPage) }, icon('edit', 16), 'عدّل')),
   });
 }
 

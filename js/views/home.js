@@ -16,11 +16,14 @@ import { computeZakat, zakatDueDate } from '../zakat.js';
 import { openOnboarding } from '../onboarding.js';
 import { toggleHideAmounts } from '../pin.js';
 import { openPaidChoice } from './bills.js';
-import { monthBudgetBanner } from '../monthsheet.js';
+import { openMonthBudgetSheet } from '../monthsheet.js';
 import { surplusCloseBanner } from '../goals.js';
 import { openWhatIf } from '../whatif.js';
-import { monthMap } from '../month.js';
+import { monthMap, needsMonthPlan } from '../month.js';
 import { itemWhen } from '../planner.js';
+import { categoryLeft, openCategoryLeft, leftRow } from '../catleft.js';
+import { learnNote } from '../parse.js';
+import { openReceiptScan } from '../receipt.js';
 
 let introPlayed = false;
 
@@ -33,23 +36,33 @@ export function renderHome({ open }) {
   const ms = monthStats(st, key);
   const P = buildPlan(st);
 
+  // الترتيب: مصروف اليوم، الإدخال، الاختصارات (سطر بينسحب)، المستحقات، الشهر، الميزانية…
   return [
     greeting(st, open),
-    hero(a),
+    hero(a, open),
     quickAdd(),
     frequentChips(st),
+    shortcuts(st, P, open),
     dueCard(st, key),
-    monthBudgetBanner(st) || cashCard(st, key, { compact: true }),
+    monthCard(ms, p, key, open),
+    planBanner(st),
     surplusCloseBanner(st),
     rateBanners(st),
     zakatBanner(st, open),
     backupBanner(st, open),
-    tiles(st, P, open),
-    monthCard(ms, p, key, open),
     budgetsCard(st, ms, open),
     upcomingCard(st, P, key, open),
     recentCard(st, open),
   ];
+}
+
+// تنبيه صغير إذا المصاري اللي معك أقل من ميزانية باقي الشهر
+function planBanner(st) {
+  if (!needsMonthPlan(st, todayISO())) return null;
+  return h('div', { class: 'banner slim warn-banner' },
+    h('span', { class: 'banner-ic' }, icon('alert', 20)),
+    h('p', null, 'المصاري اللي معك أقل من ميزانية باقي الشهر.'),
+    h('button', { class: 'btn small', type: 'button', onclick: () => openMonthBudgetSheet() }, 'رتّبها'));
 }
 
 /* ---------- الترحيب ---------- */
@@ -93,7 +106,7 @@ function ring(fraction, over, animate) {
   return svg;
 }
 
-function hero(a) {
+function hero(a, open) {
   if (a.source === 'none') {
     return h('section', { class: 'hero-card' },
       h('div', { class: 'hero-empty' },
@@ -108,17 +121,25 @@ function hero(a) {
   const animate = !introPlayed;
   introPlayed = true;
   const stat = (name, tint, label, val) => h('div', { class: 'hero-stat' }, badge(name, tint, 34), h('div', null, h('small', null, label), h('b', null, val)));
-  return h('section', { class: `hero-card${over ? ' over' : ''}`, 'aria-label': 'مصروف اليوم' },
-    h('div', { class: 'ring-wrap' },
-      ring(fraction, over, animate),
-      h('div', { class: 'ring-center' },
-        h('small', null, over ? 'تجاوزت اليوم' : 'باقي لك اليوم'),
-        h('strong', { class: value.length > 9 ? 'long' : '' }, value),
-        h('span', null, `من ${fmt(a.perDay)}`))),
-    h('div', { class: 'hero-stats' },
-      stat('arrowDown', 'coral', 'صرفت اليوم', fmt(a.todaySpent)),
-      stat('calendar', a.monthLeft < 0 ? 'coral' : 'teal', a.monthLeft < 0 ? 'تجاوزت الشهر' : 'باقي للشهر', fmt(Math.abs(a.monthLeft))),
-      stat('flag', 'gold', 'ضل بالشهر', daysText(a.daysLeft))));
+  // كبسة على الحلقة بتفرجيك قدّيش باقي لكل فئة (أكل، مواصلات…)
+  return h('section', {
+    class: `hero-card tappable${over ? ' over' : ''}`, role: 'button', tabindex: '0', 'aria-label': 'مصروف اليوم: اضغط لتشوف الباقي لكل فئة',
+    onclick: () => { haptic('tap'); openCategoryLeft(open); },
+    onkeydown: (e) => { if (e.key === 'Enter') openCategoryLeft(open); },
+  },
+  h('div', { class: 'ring-wrap' },
+    ring(fraction, over, animate),
+    h('div', { class: 'ring-center' },
+      h('small', null, over ? 'تجاوزت اليوم' : 'باقي لك اليوم'),
+      h('strong', { class: value.length > 9 ? 'long' : '' }, value),
+      h('span', null, `من ${fmt(a.perDay)}`))),
+  h('div', { class: 'hero-stats' },
+    stat('arrowDown', 'coral', 'صرفت اليوم', fmt(a.todaySpent)),
+    stat('calendar', a.monthLeft < 0 ? 'coral' : 'teal', a.monthLeft < 0 ? 'تجاوزت الشهر' : 'باقي للشهر', fmt(Math.abs(a.monthLeft))),
+    stat('flag', 'gold', 'ضل بالشهر', daysText(a.daysLeft))),
+  h('div', { class: 'hero-foot' },
+    h('span', null, a.cashLimited ? 'محسوب على المصاري اللي معك.' : 'مصروف اليوم لكل الفئات اليومية.'),
+    h('b', null, 'الباقي لكل فئة', icon('chevL', 14))));
 }
 
 /* ---------- الإدخال السريع ---------- */
@@ -129,16 +150,19 @@ function quickAdd() {
     enterkeyhint: 'done', autocomplete: 'off', 'aria-label': 'إدخال سريع: اكتب مصروفك',
     oninput: (e) => { addBtn.hidden = !e.target.value.trim(); },
   });
+  const camBtn = h('button', { class: 'quick-cam', type: 'button', 'aria-label': 'صوّر فاتورة', onclick: () => { haptic('select'); openReceiptScan(); } }, icon('camera', 21));
+  input.addEventListener('input', () => { camBtn.hidden = Boolean(input.value.trim()); });
   return h('section', { class: 'quick-wrap' },
     h('form', { class: 'quick', onsubmit: (e) => { e.preventDefault(); submitQuick(input); } },
       h('button', { class: 'quick-mic', type: 'button', 'aria-label': 'سجّل بالصوت', onclick: () => { haptic('select'); openVoice(); } }, icon('mic', 22, { stroke: 2 })),
       input,
+      camBtn,
       addBtn),
-    h('p', { class: 'quick-hint' }, 'اضغط المايك واحكي متل ما بتحكي: «صرفت 50 تركي مواصلات و30 قهوة».'));
+    h('p', { class: 'quick-hint' }, 'المايك: احكي كل مصاريفك ورا بعض. الكاميرا: صوّر الفاتورة وبتنقرا لحالها.'));
 }
 
 function addTx(tx, label) {
-  store.update((s) => { s.transactions.push(tx); });
+  store.update((s) => { s.transactions.push(tx); learnNote(s, tx.note, tx.categoryId); });
   haptic('success');
   toast(label, { action: 'تراجع', onAction: () => store.update((s) => { s.transactions = s.transactions.filter((t) => t.id !== tx.id); }) });
 }
@@ -147,7 +171,7 @@ function submitQuick(input) {
   const st = store.state;
   // جملة فيها كذا مبلغ أو سياق: منعرضها للمراجعة. مبلغ واحد واضح: بينضاف فوراً
   const multi = parseMulti(input.value, st);
-  if (multi.length > 1 || (multi.length === 1 && !multi[0].matched)) { reviewText(input.value); return; }
+  if (multi.length > 1 || (multi.length === 1 && (!multi[0].matched || multi[0].date || multi[0].debtId))) { reviewText(input.value); return; }
   const r = parseQuick(input.value, st);
   if (!r.ok) {
     if (r.reason === 'empty') { input.focus(); return; }
@@ -287,42 +311,28 @@ function backupBanner(st, open) {
   return bannerEl('shield', last ? 'صار لك أكتر من أسبوعين ما حفظت نسخة احتياطية.' : 'بياناتك على هالموبايل بس. احفظ نسخة احتياطية.', 'احفظ', () => open('settings'), 'warn-banner');
 }
 
-/* ---------- اختصارات لكل الميزات ---------- */
-function tiles(st, P, open) {
-  const planned = st.planItems.filter((i) => i.status !== 'bought');
-  let theyOwe = 0;
-  let iOwe = 0;
-  for (const d of st.debts) {
-    const u = toUSD(st, debtRemaining(d), d.currency);
-    if (!Number.isFinite(u)) continue;
-    if (d.direction === 'theyOwe') theyOwe += u; else iOwe += u;
-  }
-  const zDue = zakatDueDate(st);
-  let zakatSub = 'احسب زكاتك';
-  if (zDue) { const left = daysUntil(zDue); zakatSub = left >= 0 ? `بعد ${daysText(left)}` : 'مستحقة'; }
-  let debtSub = 'ما في ديون';
-  if (theyOwe > 0.005) debtSub = `إلك ${fmt(theyOwe)}`;
-  else if (iOwe > 0.005) debtSub = `عليك ${fmt(iOwe)}`;
-  const tile = (iconName, tint, title, sub, path, warn = false) => h('button', { class: `tile${warn ? ' warn' : ''}`, type: 'button', onclick: () => { haptic('tap'); if (typeof path === 'function') path(); else open(path); } },
-    badge(iconName, tint, 38), h('div', null, h('b', null, title), h('small', null, sub)));
-  // خريطة الشهر: الجاي أو التنبيه
+/* ---------- اختصارات: سطر واحد بينسحب لليمين واليسار ---------- */
+function shortcuts(st, P, open) {
   const M = monthMap(st, todayISO());
-  const nextEv = M.days.filter((x) => !x.past && !x.isToday).flatMap((x) => x.events.filter((e) => e.kind !== 'billPaid').map((e) => ({ e, day: x.day })))[0];
-  let mapSub = 'كل يوم شو فيه';
-  if (M.runOut) mapSub = `انتبه يوم ${M.runOut}`;
-  else if (nextEv) mapSub = `${nextEv.e.name} يوم ${nextEv.day}`;
+  const zDue = zakatDueDate(st);
+  const zakatSoon = zDue && daysUntil(zDue) <= 30 && computeZakat(st).due > 0;
   const recs = (st.recurring || []).filter((r) => r.active !== false);
-  const confirmed = planned.filter((i) => i.kind === 'want' && i.confirmed).length;
-  return h('section', { class: 'tiles', 'aria-label': 'اختصارات' },
-    tile('calendar', 'teal', 'خريطة الشهر', mapSub, 'plan/calendar', Boolean(M.runOut)),
-    tile('bag', 'violet', 'المشتريات', planned.length ? (confirmed ? `${planned.length} بالخطة، ${confirmed} مثبّت` : `${planned.length} بالخطة`) : 'ضيف غرض', 'plan/items'),
-    tile('target', 'gold', 'الأهداف', st.goals.length ? `${st.goals.length} هدف` : 'ادّخر لشي', 'plan/goals'),
-    tile('trend', 'blue', 'السنة', P.totals.income > 0 ? `آخر السنة ${fmt(P.endBalance)}` : 'خطة 12 شهر', 'plan/year'),
-    tile('receipt', 'sage', 'الاشتراكات', recs.length ? `${recs.length} بالشهر` : 'نت، موبايل…', 'plan/bills'),
-    tile('bulb', 'amber', 'شو لو؟', 'جرّب قبل ما تشتري', () => openWhatIf()),
-    tile('people', 'pink', 'الديون', debtSub, 'money/debts'),
-    tile('moon', 'gold', 'الزكاة', zakatSub, 'money/zakat'),
-    tile('chart', 'slate', 'التحليل', 'وين راحت المصاري', 'activity/reports'));
+  const recDue = recurringStatus(st, todayISO()).some((x) => x.show);
+  const sc = (iconName, tint, label, path, dot = false) => h('button', {
+    class: 'sc', type: 'button', role: 'listitem',
+    onclick: () => { haptic('tap'); if (typeof path === 'function') path(); else open(path); },
+  }, h('span', { class: 'sc-ic' }, badge(iconName, tint, 44), dot ? h('i', { class: 'sc-dot', 'aria-label': 'في شي بدو انتباه' }) : null), h('span', null, label));
+  return h('section', { class: 'shortcuts', role: 'list', 'aria-label': 'اختصارات' },
+    sc('camera', 'coral', 'صوّر فاتورة', () => openReceiptScan()),
+    sc('calendar', 'teal', 'خريطة الشهر', 'plan/calendar', Boolean(M.runOut)),
+    sc('bag', 'violet', 'المشتريات', 'plan/items'),
+    sc('target', 'gold', 'الأهداف', 'plan/goals'),
+    sc('chart', 'blue', 'التحليل', 'activity/reports'),
+    sc('receipt', 'sage', recs.length ? 'الاشتراكات' : 'اشتراكات', 'plan/bills', recDue),
+    sc('trend', 'blue', 'السنة', 'plan/year'),
+    sc('people', 'pink', 'الديون', 'money/debts'),
+    sc('moon', 'amber', 'الزكاة', 'money/zakat', Boolean(zakatSoon)),
+    sc('bulb', 'amber', 'شو لو؟', () => openWhatIf()));
 }
 
 /* ---------- الشهر ---------- */
@@ -348,27 +358,17 @@ function monthCard(ms, p, key, open) {
     p.savings > 0 ? h('p', { class: 'row-note' }, `خطتك تشيل ${fmt(p.savings)} ادخار هالشهر.`) : null);
 }
 
+// الميزانية: قدّيش «باقي» لكل فئة (مش بس قدّيش صرفت)
 function budgetsCard(st, ms, open) {
-  const key = todayISO().slice(0, 7);
-  const items = st.categories
-    .filter((c) => c.type === 'expense')
-    .map((c) => ({ c, b: budgetFor(st, c, key), spent: ms.byCat.get(c.id) || 0 }))
-    .filter((x) => x.b > 0 || x.spent > 0)
-    .sort((x, y) => (y.spent / (y.b || 1)) - (x.spent / (x.b || 1)))
+  const L = categoryLeft(st, todayISO());
+  const items = L.rows.filter((x) => x.budget > 0 || x.spent > 0)
+    .sort((x, y) => (y.budget ? y.spent / y.budget : 0) - (x.budget ? x.spent / x.budget : 0))
     .slice(0, 4);
   if (!items.length) return null;
-  return group(monthOverride(st, key) ? 'الميزانية (استثنائية هالشهر)' : 'الميزانية', items.map(({ c, b, spent }) => {
-    const ratio = b ? spent / b : 0;
-    const state = !b ? '' : ratio > 1 ? 'over' : ratio >= 0.85 ? 'warn' : '';
-    return h('div', { class: 'row' },
-      badge(catIcon(c), catTint(c), 40),
-      h('span', { class: 'row-main' },
-        h('span', { class: 'row-title' }, catLabel(c)),
-        b ? bar(ratio, state) : null),
-      h('span', { class: 'row-end' },
-        h('span', { class: `amount ${state}`.trim() }, fmt(spent)),
-        b ? h('span', { class: 'row-sub' }, `من ${fmt(b)}`) : null));
-  }), { action: h('button', { class: 'link-btn', type: 'button', onclick: () => open('plan/month') }, 'عدّل', icon('chevL', 16)) });
+  return group(L.special ? 'الميزانية (استثنائية هالشهر)' : 'الميزانية', [
+    ...items.map(leftRow),
+    h('button', { class: 'row more-row', type: 'button', onclick: () => openCategoryLeft(open) }, 'كل الفئات', icon('chevL', 16)),
+  ], { action: h('button', { class: 'link-btn', type: 'button', onclick: () => open('plan/month') }, 'عدّل', icon('chevL', 16)) });
 }
 
 function upcomingCard(st, P, key, open) {

@@ -5,8 +5,9 @@ import { store, APP_VERSION } from '../store.js';
 import { CURRENCIES, fmt } from '../money.js';
 import { relTime } from '../dates.js';
 import { group, navRow } from '../components.js';
-import { openCategoryForm, switchRow, accountOpts } from '../forms.js';
+import { openCategoryForm, switchRow, accountOpts, openReorderSheet } from '../forms.js';
 import { exportBackup, pickBackupFile } from '../backup.js';
+import { openAiSetup } from '../receipt.js';
 import { openOnboarding } from '../onboarding.js';
 import { toggleHideAmounts, requirePin, openPinSheet } from '../pin.js';
 
@@ -52,15 +53,27 @@ export function renderSettings({ open }) {
       h('p', { class: 'row-note' }, 'إذا كتبت العملة مع المبلغ، متل «200 تركي مواصلات»، بتنسجل على محفظة هالعملة. وفيك تحكي بمايك الكيبورد بدل ما تكتب.'),
     ]),
 
+    group('قراءة الفواتير', [
+      navRow({
+        iconName: 'camera', tint: 'coral',
+        title: st.settings.ai?.key ? 'جيميناي شغّال' : 'شغّل قراءة الفواتير',
+        sub: st.settings.ai?.key
+          ? `بتصوّر الفاتورة وبتنقرا أغراضها لحالها (${st.settings.ai.model || 'Gemini'}). اضغط لتغيّر المفتاح أو تشيله.`
+          : 'بتصوّر الفاتورة، وجيميناي بيقرأ كل غرض وسعره وفئته. بدها مفتاح مجاني من جوجل.',
+        onclick: () => openAiSetup(),
+      }),
+    ]),
+
     group('النسخة الاحتياطية', [
       h('div', { class: 'row' },
         badge('shield', 'mint', 40),
         h('span', { class: 'row-main' },
           h('span', { class: 'row-title' }, 'آخر نسخة'),
           h('span', { class: 'row-sub wrap' }, st.settings.lastBackupAt ? relTime(st.settings.lastBackupAt) : 'ما حفظت ولا نسخة لسّا. بياناتك على هالموبايل بس.'))),
+      h('p', { class: 'row-note' }, '«حفظ نسخة» بيفتح قائمة المشاركة: اختار Google Drive وبتنحفظ النسخة بحسابك، فإذا غيّرت الموبايل بترجّعها من «استرجاع نسخة».'),
       h('div', { class: 'row-actions' },
-        h('button', { class: 'btn small', type: 'button', onclick: () => exportBackup() }, icon('download', 18), 'حفظ نسخة'),
-        h('button', { class: 'btn secondary small', type: 'button', onclick: () => pickBackupFile() }, icon('upload', 18), 'استرجاع نسخة')),
+        h('button', { class: 'btn small', type: 'button', onclick: () => exportBackup() }, icon('upload', 18), 'حفظ نسخة على درايف'),
+        h('button', { class: 'btn secondary small', type: 'button', onclick: () => pickBackupFile() }, icon('download', 18), 'استرجاع نسخة')),
     ]),
 
     group('التطبيق', [
@@ -120,9 +133,14 @@ export function renderCategories() {
   };
   const expense = st.categories.filter((c) => c.type === 'expense');
   const income = st.categories.filter((c) => c.type === 'income');
+  const sortBtn = (type) => h('button', { class: 'link-btn', type: 'button', onclick: () => openReorderSheet(type) }, icon('sort', 16), 'رتّب');
   return [
-    h('p', { class: 'section-note' }, 'اضغط على أي فئة لتغيّر اسمها أو أيقونتها أو لونها، أو تخبّي اسمها. الفئة المخفية بتطلع «خاص» بكل مكان، والمبلغ بيضل محسوب.'),
-    group('المصاريف', [...expense.map(row), h('div', { class: 'row-actions' }, h('button', { class: 'btn secondary small', type: 'button', onclick: () => openCategoryForm(null, 'expense') }, icon('plus', 18), 'فئة مصروف'))]),
-    group('الدخل', [...income.map(row), h('div', { class: 'row-actions' }, h('button', { class: 'btn secondary small', type: 'button', onclick: () => openCategoryForm(null, 'income') }, icon('plus', 18), 'فئة دخل'))]),
+    h('p', { class: 'section-note' }, 'اضغط على أي فئة لتغيّر اسمها أو أيقونتها أو لونها، أو تخبّي اسمها. «رتّب» بيغيّر ترتيبها بالميزانية والإعدادات.'),
+    group(null, [
+      switchRow('لوحة الإضافة حسب الاستعمال', 'بالبداية بتطلع الفئات بترتيبك، ومع الوقت الأكتر استعمالاً بتطلع أول. إذا طفيتها بيضل ترتيبك بس.',
+        st.settings.catSortUsage !== false, (v) => store.update((s) => { s.settings.catSortUsage = v; })),
+    ]),
+    group('المصاريف', [...expense.map(row), h('div', { class: 'row-actions' }, h('button', { class: 'btn secondary small', type: 'button', onclick: () => openCategoryForm(null, 'expense') }, icon('plus', 18), 'فئة مصروف'))], { action: sortBtn('expense') }),
+    group('الدخل', [...income.map(row), h('div', { class: 'row-actions' }, h('button', { class: 'btn secondary small', type: 'button', onclick: () => openCategoryForm(null, 'income') }, icon('plus', 18), 'فئة دخل'))], { action: sortBtn('income') }),
   ];
 }
